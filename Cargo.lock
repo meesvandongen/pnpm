@@ -4665,6 +4665,7 @@ dependencies = [
  "pnpm-env-installer",
  "pnpm-executor",
  "pnpm-fs",
+ "pnpm-fs-access-tracer",
  "pnpm-git-fetcher",
  "pnpm-github-actions",
  "pnpm-global",
@@ -5210,6 +5211,16 @@ dependencies = [
  "tempfile",
  "tracing",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "pnpm-fs-access-tracer"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

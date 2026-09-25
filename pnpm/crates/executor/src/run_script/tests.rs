@@ -2,7 +2,7 @@ use super::{
     RunScript, ScriptOutput, build_command, parsed_by_windows_shell, posix_quote, run_script,
 };
 use crate::{extend_path::ScriptsPrependNodePath, script_exit::ScriptExit};
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, ffi::OsString, fs, path::Path};
 use tempfile::tempdir;
 
 #[test]
@@ -57,6 +57,16 @@ fn manifest() -> serde_json::Value {
 }
 
 fn run(pkg_root: &Path, stage: &str, script: &str, args: &[String]) -> ScriptExit {
+    run_with_launcher(pkg_root, stage, script, args, &[])
+}
+
+fn run_with_launcher(
+    pkg_root: &Path,
+    stage: &str,
+    script: &str,
+    args: &[String],
+    launcher: &[OsString],
+) -> ScriptExit {
     let extra_env = HashMap::new();
     run_script(&RunScript {
         environment: crate::ScriptEnvironment {
@@ -74,6 +84,7 @@ fn run(pkg_root: &Path, stage: &str, script: &str, args: &[String]) -> ScriptExi
             shell: None,
             shell_emulator: false,
             wd_bin_dir: None,
+            launcher,
         },
         invocation: crate::ScriptInvocation { stage, script, args },
         manifest: &manifest(),
@@ -120,6 +131,19 @@ fn run_script_prepends_node_modules_bin_to_path() {
             .any(|entry| Path::new(entry) == expected_bin),
         "PATH should contain the project's node_modules/.bin",
     );
+}
+
+#[test]
+#[cfg_attr(target_os = "windows", ignore = "uses a POSIX shell script body and `env`")]
+fn run_script_passes_the_shell_invocation_to_the_launcher() {
+    let dir = tempdir().expect("temp dir");
+    let marker = dir.path().join("launched.txt");
+    let script = format!(r#"printf %s "$LAUNCHED_BY" > "{}"; exit 3"#, marker.display());
+    let launcher = ["env", "LAUNCHED_BY=launcher"].map(OsString::from);
+
+    let status = run_with_launcher(dir.path(), "build", &script, &[], &launcher);
+    assert_eq!(status.code(), Some(3));
+    assert_eq!(fs::read_to_string(&marker).expect("read marker"), "launcher");
 }
 
 #[test]

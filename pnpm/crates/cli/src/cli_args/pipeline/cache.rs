@@ -6,11 +6,15 @@
 //! deliberate `PoC` stand-in for the per-importer dependency-graph hash the
 //! RFC specifies.
 
+pub use tracked::{TrackingScope, written_outputs};
+
+pub(super) use patterns::FileMatcher;
+
 use super::{
     capture::CapturedScript,
     paths::{check_ancestors, check_input_directories, validate_relative_path},
 };
-use inputs::{HashedFile, compile_globs};
+use inputs::HashedFile;
 use miette::IntoDiagnostic;
 use pnpm_config::TaskSettings;
 use pnpm_crypto_hash::{
@@ -25,10 +29,7 @@ use std::{
     process::Command,
     sync::{Arc, Mutex},
 };
-use wax::{
-    Glob,
-    walk::{Entry, FileIterator},
-};
+use wax::walk::{Entry, FileIterator};
 
 /// How a task met the cache, for the run report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -59,6 +60,9 @@ pub struct TaskCache {
     tasks_dir: PathBuf,
     state_dir: PathBuf,
     workspace_root: PathBuf,
+    /// The workspace root with its symlinks resolved, which the paths a
+    /// tracked task accessed are recorded relative to.
+    canonical_root: PathBuf,
     lockfile_hash: String,
     runtime_fingerprint: String,
     /// Per-project tracked-file hashes, shared by every task of the
@@ -149,6 +153,7 @@ impl TaskCache {
             tasks_dir,
             state_dir,
             workspace_root: workspace_root.to_path_buf(),
+            canonical_root: dunce::canonicalize(workspace_root).into_diagnostic()?,
             lockfile_hash,
             runtime_fingerprint,
             project_files: Mutex::new(HashMap::new()),
@@ -198,16 +203,16 @@ impl TaskCache {
         self.write_output_record(task_id, &record).map_err(|error| error.to_string())
     }
 
-    /// Store a successful task: its declared outputs and captured logs.
+    /// Store a successful task: its output files, relative to
+    /// `project_dir`, and its captured logs.
     pub fn store(
         &self,
         key: &str,
         project_dir: &Path,
         task_id: &str,
-        outputs: &[String],
+        files: Vec<String>,
         scripts: Vec<CapturedScript>,
     ) -> io::Result<()> {
-        let files = collect_output_files(project_dir, outputs)?;
         let entry_dir = self.entry_dir(key);
         let parent = entry_dir.parent().expect("cache entry parent");
         fs::create_dir_all(parent)?;
@@ -282,9 +287,6 @@ impl TaskCache {
     }
 }
 
-/// The files under `project_dir` the `outputs` globs match, as sorted
-/// `/`-separated relative paths. `node_modules` and `.git` are never
-/// walked.
 /// A cached output path is a relative path inside the project, with no
 /// component that could redirect the write elsewhere.
 fn validate_output_path(root: &Path, relative: &str) -> Result<(), String> {
@@ -396,14 +398,15 @@ fn copy_cached_outputs(
     Ok(record)
 }
 
-fn collect_output_files(project_dir: &Path, outputs: &[String]) -> io::Result<Vec<String>> {
-    let globs = compile_globs(outputs)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
-    if globs.is_empty() {
-        return Ok(Vec::new());
-    }
+/// The files under `project_dir` the `outputs` globs match, as sorted
+/// `/`-separated relative paths. `node_modules` and `.git` are never
+/// walked.
+pub(super) fn collect_output_files(
+    project_dir: &Path,
+    outputs: &FileMatcher<'_>,
+) -> io::Result<Vec<String>> {
     let mut files = Vec::new();
-    for glob in globs {
+    for glob in outputs.globs() {
         for entry in glob
             .walk(project_dir)
             .not(wax::any(["**/node_modules/**", "**/.git/**"]))
@@ -419,6 +422,9 @@ fn collect_output_files(project_dir: &Path, outputs: &[String]) -> io::Result<Ve
                 .map_err(|_| io::Error::other("output glob must stay inside the project"))?
                 .to_string_lossy()
                 .replace(std::path::MAIN_SEPARATOR, "/");
+            if outputs.excludes(&relative) {
+                continue;
+            }
             validate_relative_path(Path::new(&relative))?;
             check_ancestors(project_dir, Path::new(&relative))?;
             files.push(relative);
@@ -455,3 +461,7 @@ fn stage_output_files(
 }
 
 mod inputs;
+
+mod patterns;
+
+mod tracked;

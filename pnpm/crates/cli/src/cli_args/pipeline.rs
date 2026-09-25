@@ -48,7 +48,8 @@ use pnpm_workspace_task_scheduler::{
 };
 use report::RunReport;
 
-use reporting::{StatusCounts, compute_task_keys, print_dry_run, record_task_outcome};
+use keys::{KeyContext, TaskKeys};
+use reporting::{StatusCounts, print_dry_run, record_task_outcome};
 use selection::{
     SelectAffectedOptions, build_full_graph, git_stdout, select_affected_projects,
     workspace_identity,
@@ -68,8 +69,11 @@ mod agent;
 mod cache;
 mod capture;
 mod cargo_cache;
+mod keys;
+mod outcome;
 mod paths;
 mod report;
+mod tracking;
 
 /// The base ref the affected selection falls back to when neither
 /// `--base` nor the `pipelineBase` setting names one.
@@ -237,7 +241,15 @@ impl<'a> PipelineRun<'a> {
         }
 
         let cache = TaskCache::open(&self.data_dir(), self.workspace_root)?;
-        let task_keys = self.compute_task_keys(&task_graph, &sequenced_tasks, plan, &cache)?;
+        // `--no-cache` skips the pricing altogether: nothing reads a key,
+        // and hashing every tracked file of every project is the bulk of
+        // what the flag exists to avoid.
+        let task_keys = TaskKeys::plan(
+            KeyContext { graph: plan.graph, cache: &cache, config: self.config, emit: self.emit },
+            &task_graph,
+            &sequenced_tasks,
+            !self.invocation.no_cache,
+        )?;
 
         capture::install_forward(self.emit);
         let runner = TaskRunner {
@@ -255,26 +267,7 @@ impl<'a> PipelineRun<'a> {
         runner.schedule(&task_graph);
 
         let statuses = runner.finish()?;
-        self.finish_plan(plan, &statuses, &task_keys)
-    }
-
-    /// Keys are computed for every task before anything runs, walking the
-    /// sequenced order so a task's dependency keys exist when its own is
-    /// built. This is also what a distributed tier would need: the whole
-    /// plan, priced, without executing. `--no-cache` skips the pricing
-    /// altogether: nothing reads a key, and hashing every tracked file of
-    /// every project is the bulk of what the flag exists to avoid.
-    fn compute_task_keys(
-        &self,
-        task_graph: &TaskGraph,
-        sequenced_tasks: &[TaskKey],
-        plan: &PipelinePlan<'_, '_>,
-        cache: &TaskCache,
-    ) -> miette::Result<HashMap<TaskKey, Option<String>>> {
-        if self.invocation.no_cache {
-            return Ok(HashMap::new());
-        }
-        compute_task_keys(task_graph, sequenced_tasks, plan.graph, cache, self.config, self.emit)
+        self.finish_plan(plan, &statuses, &task_keys.into_keys())
     }
 
     fn finish_plan(
@@ -357,7 +350,7 @@ struct TaskRunner<'a, 'graph> {
     run: &'a PipelineRun<'a>,
     graph: &'a ProjectGraph<GraphPkg<'graph>>,
     cache: &'a TaskCache,
-    task_keys: &'a HashMap<TaskKey, Option<String>>,
+    task_keys: &'a TaskKeys<'a, 'graph>,
     report: &'a RunReport,
     environment: PipelineEnvironment,
     results: PipelineResults,
@@ -391,29 +384,46 @@ impl TaskRunner<'_, '_> {
     fn run_task(&self, node: &TaskNode) -> TaskCompletion {
         let key = TaskKey { project: node.project.clone(), task_name: node.task_name.clone() };
         let summary_key = format_task(&key, self.run.workspace_root);
-        let outcome = run_pipeline_task(&RunTaskOptions {
-            node,
-            graph: self.graph,
-            config: self.run.config,
-            invocation: self.run.invocation,
-            cache: self.cache,
-            task_key: self.task_keys.get(&key).and_then(Option::as_deref),
-            environment: crate::cli_args::pipeline::execution::TaskEnvironment {
-                init_cwd: &self.environment.init_cwd,
-                extra_env: &self.environment.extra_env,
-            },
-            reporting: crate::cli_args::pipeline::execution::TaskReporting {
-                emit: self.run.emit,
-                silent: self.run.silent,
-                report: self.report,
-                summary_key: &summary_key,
-            },
+        let outcome = self.task_keys
+            .key_for(node)
+            .and_then(|task_key| {
+                run_pipeline_task(&RunTaskOptions {
+                    node,
+                    graph: self.graph,
+                    config: self.run.config,
+                    invocation: self.run.invocation,
+                    cache: self.cache,
+                    task_key: task_key.as_deref(),
+                    environment: crate::cli_args::pipeline::execution::TaskEnvironment {
+                        init_cwd: &self.environment.init_cwd,
+                        extra_env: &self.environment.extra_env,
+                        launcher: &[],
+                    },
+                    reporting: crate::cli_args::pipeline::execution::TaskReporting {
+                        emit: self.run.emit,
+                        silent: self.run.silent,
+                        report: self.report,
+                        summary_key: &summary_key,
+                    },
+                })
+            });
+        let outcome = outcome.map(|outcome| {
+            self.task_keys.settle(key, outcome.key);
+            outcome.status
         });
         record_task_outcome(&self.results.statuses, &self.results.abort, &summary_key, outcome)
     }
 
+    /// A pass-through task still has a key for its dependents; a task
+    /// skipped because a dependency failed has none, and neither do they.
     fn skip_task(&self, node: &TaskNode) {
         let key = TaskKey { project: node.project.clone(), task_name: node.task_name.clone() };
+        if node.scripts.is_empty() {
+            match self.task_keys.key_for(node) {
+                Ok(task_key) => self.task_keys.settle(key.clone(), task_key),
+                Err(error) => self.results.abort(error),
+            }
+        }
         let summary_key = format_task(&key, self.run.workspace_root);
         self.results.statuses.lock().expect("status lock is not poisoned")[&summary_key].status =
             Status::Skipped;

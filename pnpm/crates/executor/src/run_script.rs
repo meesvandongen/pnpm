@@ -207,9 +207,7 @@ fn run_in_shell(
     command: &str,
     child_env: &HashMap<String, String>,
 ) -> Result<ScriptExit, RunScriptError> {
-    let mut cmd = Command::new(&shell.program);
-    cmd.args(&shell.args);
-    push_script_arg(&mut cmd, command, shell.windows_verbatim_args);
+    let mut cmd = shell_command(opts.execution.launcher, shell, command);
     cmd.current_dir(opts.pkg_root)
         .env_clear()
         .envs(child_env);
@@ -230,9 +228,7 @@ fn run_piped(
     child_env: &HashMap<String, String>,
     streamed: StreamedScript<'_>,
 ) -> Result<ScriptExit, RunScriptError> {
-    let mut cmd = Command::new(&shell.program);
-    cmd.args(&shell.args);
-    push_script_arg(&mut cmd, command, shell.windows_verbatim_args);
+    let mut cmd = shell_command(opts.execution.launcher, shell, command);
     cmd.current_dir(opts.pkg_root)
         .env_clear()
         .envs(child_env)
@@ -245,6 +241,21 @@ fn run_piped(
         .pump(&mut child)
         .map(ScriptExit::Process)
         .map_err(|source| RunScriptError::Wait { script: command.to_string(), source })
+}
+
+/// `shell` invoked on `command`, behind `launcher` when there is one.
+fn shell_command(launcher: &[OsString], shell: &SelectedShell, command: &str) -> Command {
+    let mut cmd = match launcher.split_first() {
+        Some((program, args)) => {
+            let mut cmd = Command::new(program);
+            cmd.args(args).arg(&shell.program);
+            cmd
+        }
+        None => Command::new(&shell.program),
+    };
+    cmd.args(&shell.args);
+    push_script_arg(&mut cmd, command, shell.windows_verbatim_args);
+    cmd
 }
 
 fn spawn_error(opts: &RunScript<'_>, command: &str, source: io::Error) -> RunScriptError {

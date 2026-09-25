@@ -116,6 +116,7 @@ mod peers;
 mod ping;
 mod pipeline_cache;
 mod pipeline_cargo_cache;
+mod pipeline_tracked_cache;
 mod pipeline_watch;
 mod pnpm_compatibility;
 mod pnpr_install;

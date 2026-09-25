@@ -1,6 +1,7 @@
 use crate::ScriptsPrependNodePath;
 use std::{
     collections::HashMap,
+    ffi::OsString,
     path::{Path, PathBuf},
 };
 
@@ -52,6 +53,11 @@ pub struct ScriptExecutionOptions<'a> {
     /// `modulesDir` puts them somewhere other than
     /// `<dir>/node_modules/.bin`. `None` keeps `<dir>/node_modules/.bin`.
     pub wd_bin_dir: Option<&'a Path>,
+    /// A program and its leading arguments that the shell command line is
+    /// passed to, instead of spawning the shell directly. Empty spawns the
+    /// shell. [`run_script`](fn@crate::run_script) does not apply it to a
+    /// script the shell emulator runs.
+    pub launcher: &'a [OsString],
 }
 
 pub struct ScriptInvocation<'a> {
