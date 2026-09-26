@@ -11,4 +11,6 @@ tasks:
     outputs: [{ auto: true }]
 ```
 
-Automatic tracking works on Linux. On other platforms, and with `shellEmulator` enabled, such a task runs without the cache and pnpm prints a warning.
+pnpm does not cache a run that changed a file it read, or whose inputs changed while it ran.
+
+Automatic tracking needs Linux 5.8 or later. On other platforms, and with `shellEmulator` enabled, such a task runs without the cache and pnpm prints a warning.

@@ -397,7 +397,7 @@ impl TaskRunner<'_, '_> {
                     environment: crate::cli_args::pipeline::execution::TaskEnvironment {
                         init_cwd: &self.environment.init_cwd,
                         extra_env: &self.environment.extra_env,
-                        launcher: &[],
+                        recorder: None,
                     },
                     reporting: crate::cli_args::pipeline::execution::TaskReporting {
                         emit: self.run.emit,

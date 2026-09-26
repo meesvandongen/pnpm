@@ -1,25 +1,19 @@
 //! Record the files a process tree touches while it runs: which files it
 //! reads, which paths it probes (including ones that do not exist), which
-//! directories it lists, and which paths it writes.
+//! directories it lists, which programs it executes, and which paths it
+//! writes.
 //!
 //! `pnpm pipeline` uses the record as a task's automatically tracked cache
-//! inputs and outputs. The tracer follows every descendant of the traced
-//! command, so a script that spawns `node`, which spawns a compiler, is
-//! recorded as one task.
+//! inputs and outputs. A [`Recorder`] follows every descendant of the
+//! commands it prepares, so a script that spawns `node`, which spawns a
+//! compiler, is recorded as one task.
 //!
-//! Tracing is implemented for Linux on x86-64 and 64-bit Arm, where it uses
-//! `ptrace` with a seccomp filter that stops the tracee only at the file
-//! system system calls the record needs. [`IS_SUPPORTED`] is `false`
-//! elsewhere, and [`trace_command`] reports an incomplete trace.
-//!
-//! A tracer must be the process that waits for every tracee, which a
-//! multi-threaded host cannot promise. The [`helper`] module therefore runs
-//! the tracer in a process of its own, launched through
-//! [`helper::launcher`] and entered through [`helper::try_run`].
+//! Recording is implemented for Linux 5.8 and later on x86-64 and 64-bit
+//! Arm. A seccomp filter hands each file system call to a supervisor thread
+//! in the recording process, which notes the call's paths and lets the
+//! kernel run it. [`IS_SUPPORTED`] is `false` on every other platform.
 
-pub mod helper;
-
-pub use accesses::FileAccesses;
+pub use accesses::{FileAccesses, PathState};
 
 mod accesses;
 
@@ -33,33 +27,57 @@ mod unsupported;
 #[cfg(not(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
 use unsupported as platform;
 
-use std::{
-    io,
-    process::{Command, ExitStatus},
-};
+use std::{fmt, io, process::Command};
 
-/// Whether this build of pnpm can trace file accesses at all. A supported
-/// platform can still refuse at run time (a sandbox that forbids `ptrace`,
-/// a kernel without `PTRACE_GET_SYSCALL_INFO`); [`Trace::complete`] says
-/// whether it did.
+/// Whether this build of pnpm can record file accesses at all. A supported
+/// build can still find the running system unable to, which
+/// [`Recorder::new`] reports.
 pub const IS_SUPPORTED: bool = platform::IS_SUPPORTED;
 
-/// The outcome of [`trace_command`].
-#[derive(Debug)]
-pub struct Trace {
-    pub status: ExitStatus,
-    pub accesses: FileAccesses,
-    /// `false` when some of the process tree ran untraced, so
-    /// [`Trace::accesses`] may be missing paths the command touched.
-    pub complete: bool,
+/// Why [`Recorder::new`] cannot record on this system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unsupported(&'static str);
+
+impl fmt::Display for Unsupported {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.0)
+    }
 }
 
-/// Run `command` to completion and record the files it and its
-/// descendants accessed.
-///
-/// The command's stdio, environment, and working directory are used as
-/// configured. Descendants that outlive the command are released from the
-/// trace when it exits, and their later accesses are not recorded.
-pub fn trace_command(command: Command) -> io::Result<Trace> {
-    platform::trace_command(command)
+impl std::error::Error for Unsupported {}
+
+/// Records the file accesses of the commands [`Recorder::prepare`] sets
+/// up, and of every process they start, until [`Recorder::finish`].
+pub struct Recorder(platform::Recorder);
+
+/// Returned by [`Recorder::prepare`]; keep it until the command has been
+/// spawned (or failed to spawn).
+#[must_use = "dropping it before the command is spawned stops the recording"]
+pub struct Prepared {
+    _held: platform::Prepared,
+}
+
+impl Recorder {
+    pub fn new() -> Result<Self, Unsupported> {
+        platform::Recorder::new().map(Recorder)
+    }
+
+    /// Set `command` up so that the process it spawns, and every process
+    /// that one starts, is recorded.
+    pub fn prepare(&self, command: &mut Command) -> io::Result<Prepared> {
+        self.0
+            .prepare(command)
+            .map(|held| Prepared { _held: held })
+    }
+
+    /// Stop recording and return what was recorded, or `None` when some of
+    /// it could not be observed: a process ran unrecorded, or made a call
+    /// the recorder could not decode.
+    ///
+    /// Processes a prepared command left running keep running, but what
+    /// they access from now on is not recorded.
+    #[must_use]
+    pub fn finish(self) -> Option<FileAccesses> {
+        self.0.finish()
+    }
 }

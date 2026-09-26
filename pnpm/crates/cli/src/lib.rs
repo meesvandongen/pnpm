@@ -88,13 +88,6 @@ fn is_reported_error(error: &miette::Report) -> bool {
 /// Parse and execute the CLI, including shim dispatch and startup fast paths.
 fn run_cli() -> miette::Result<()> {
     let argv: Vec<OsString> = std::env::args_os().collect();
-    // `pnpm pipeline` runs the scripts of a task with automatically tracked
-    // inputs behind this executable, which traces them and exits the way
-    // they did.
-    if let Some(exit_code) = pnpm_fs_access_tracer::helper::try_run(&argv) {
-        #[expect(clippy::exit, reason = "the tracer propagates the traced command's exit status")]
-        std::process::exit(exit_code);
-    }
     // A context-aware global shim is this executable launched under the
     // shim's name, so dispatch runs on the raw argv before any rewriting
     // or clap machinery below: a shim named like an alias must not have

@@ -83,7 +83,7 @@ impl PackScripts {
                 shell: None,
                 shell_emulator: false,
                 wd_bin_dir: None,
-                launcher: &[],
+                recorder: None,
             },
             dep_path: &dep_path,
             pkg_root: dir,

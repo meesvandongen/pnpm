@@ -256,7 +256,7 @@ impl RunArgs {
                 ScriptOutput::Inherit
             },
             process_tracker: process_tracker.as_ref(),
-            launcher: &[],
+            recorder: None,
             emit: reporter_emit(reporter),
         };
         let outcome = ScriptOutcome {

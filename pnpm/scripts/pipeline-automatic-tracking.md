@@ -20,7 +20,7 @@ tasks:
 Every process a script starts is traced, including the processes those start.
 pnpm records:
 
-- files the task read,
+- files the task read, and programs it executed,
 - paths it checked for existence or metadata, including paths that did not
   exist,
 - directories whose entries it listed,
@@ -46,6 +46,15 @@ These paths are never inputs:
   its real location),
 - paths the task wrote,
 - paths inside the project that match the task's `outputs` globs.
+
+pnpm does not cache a run in two cases, and prints a warning naming the file:
+
+- The task read a file and then changed it, the way `eslint --fix` or a
+  formatter does. The stored result would not match the file the next run
+  sees. Add the file to the task's `outputs`, or exclude it with `!` in its
+  `inputs`, to cache the task anyway.
+- An input changed while the task ran, for example because you saved a file
+  mid-build. The next run rebuilds with the new contents.
 
 With `{ auto: true }` in `outputs`, the files the task wrote inside its project
 directory, outside `node_modules` and `.git`, are stored as its outputs and
@@ -77,23 +86,26 @@ Environment reads are not observed.
 
 ## Requirements and limits
 
-Tracking uses `ptrace` and `seccomp` and is implemented for Linux on x86-64 and
-64-bit Arm. Elsewhere, and when `shellEmulator` is enabled, a task with
+Tracking uses seccomp user notifications and needs Linux 5.8 or later on x86-64
+or 64-bit Arm. Elsewhere, and when `shellEmulator` is enabled, a task with
 `{ auto: true }` in its `inputs` runs without the cache, and so do the tasks
 that depend on it. pnpm prints a warning explaining why.
 
-A sandbox that forbids `ptrace`, or a kernel older than 5.3, leaves the trace
-incomplete. The task still runs, but its result is not cached and pnpm prints a
-warning. The same happens when part of the process tree runs a 32-bit program.
+Each file system call a traced process makes waits for pnpm to record it. On
+Linux 6.6 and later the kernel hands the call to pnpm on the same CPU, which
+costs a few microseconds per call. Older kernels take longer per call. Other
+system calls run at full speed.
 
-Tracing stops each traced process at every file system call it makes, so a
-task that makes many of them runs noticeably slower. Other system calls run at
-full speed.
+A sandbox that forbids seccomp filters, or reading a traced process's memory,
+leaves the trace incomplete. The task still runs, but its result is not cached
+and pnpm prints a warning. The same happens when part of the process tree runs
+a 32-bit program.
 
-When a script exits, processes it left running in the background are stopped.
 A traced process cannot gain privileges through a set-user-ID program such as
-`sudo`, cannot set up `io_uring` (programs fall back to ordinary system calls),
-and job-control stops inside a traced task are ignored.
+`sudo`, and cannot set up `io_uring`, so programs fall back to ordinary system
+calls. Processes a script leaves running in the background keep running, but
+their file accesses after the script exits are not recorded. Once pnpm exits,
+their file system calls fail.
 
 A task with `cargoTargetDir` keeps its Git-based inputs, which its Cargo
 snapshots are keyed on. `{ auto: true }` in its `inputs` has no effect.

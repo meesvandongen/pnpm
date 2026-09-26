@@ -10,6 +10,8 @@ extend-exclude = [
 
 [default.extend-words]
 cafs   = "cafs"
+# `msghdr::msg_controllen`
+controllen = "controllen"
 ect    = "ect"
 intoto = "intoto"
 pn     = "pn"

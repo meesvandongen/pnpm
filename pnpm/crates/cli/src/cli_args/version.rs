@@ -414,7 +414,7 @@ fn run_version_lifecycle_hook<Reporter: pnpm_reporter::Reporter>(
             shell: script_shell.as_deref(),
             shell_emulator: config.shell_emulator,
             wd_bin_dir: Some(&bin_dir),
-            launcher: &[],
+            recorder: None,
         },
         dep_path: &change.name,
         pkg_root: &change.path,

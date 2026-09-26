@@ -2,7 +2,7 @@ use crate::{
     extend_path::extend_path,
     lifecycle::{StreamedScript, push_script_arg},
     make_env::{EnvOptions, build_env, path_value},
-    process_tracker::{ProcessTracker, spawn_child},
+    process_tracker::{ProcessTracker, SpawnedChild, spawn_child},
     script_exit::ScriptExit,
     shell::{ScriptShellError, SelectedShell, missing_script_shell, select_shell},
     shell_emulator::{EmulatedOutput, ShellEmulatorError, execute_emulated},
@@ -207,12 +207,12 @@ fn run_in_shell(
     command: &str,
     child_env: &HashMap<String, String>,
 ) -> Result<ScriptExit, RunScriptError> {
-    let mut cmd = shell_command(opts.execution.launcher, shell, command);
+    let mut cmd = shell_command(shell, command);
     cmd.current_dir(opts.pkg_root)
         .env_clear()
         .envs(child_env);
-    let mut child = spawn_child(&mut cmd, opts.process_tracker)
-        .map_err(|source| spawn_error(opts, command, source))?;
+    let mut child =
+        spawn_recorded(opts, &mut cmd).map_err(|source| spawn_error(opts, command, source))?;
     let status = child
         .wait()
         .map_err(|source| RunScriptError::Wait { script: command.to_string(), source })?;
@@ -228,14 +228,14 @@ fn run_piped(
     child_env: &HashMap<String, String>,
     streamed: StreamedScript<'_>,
 ) -> Result<ScriptExit, RunScriptError> {
-    let mut cmd = shell_command(opts.execution.launcher, shell, command);
+    let mut cmd = shell_command(shell, command);
     cmd.current_dir(opts.pkg_root)
         .env_clear()
         .envs(child_env)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = spawn_child(&mut cmd, opts.process_tracker)
-        .map_err(|source| spawn_error(opts, command, source))?;
+    let mut child =
+        spawn_recorded(opts, &mut cmd).map_err(|source| spawn_error(opts, command, source))?;
 
     streamed
         .pump(&mut child)
@@ -243,19 +243,22 @@ fn run_piped(
         .map_err(|source| RunScriptError::Wait { script: command.to_string(), source })
 }
 
-/// `shell` invoked on `command`, behind `launcher` when there is one.
-fn shell_command(launcher: &[OsString], shell: &SelectedShell, command: &str) -> Command {
-    let mut cmd = match launcher.split_first() {
-        Some((program, args)) => {
-            let mut cmd = Command::new(program);
-            cmd.args(args).arg(&shell.program);
-            cmd
-        }
-        None => Command::new(&shell.program),
-    };
+fn shell_command(shell: &SelectedShell, command: &str) -> Command {
+    let mut cmd = Command::new(&shell.program);
     cmd.args(&shell.args);
     push_script_arg(&mut cmd, command, shell.windows_verbatim_args);
     cmd
+}
+
+/// Spawn `cmd`, under the recorder when there is one.
+fn spawn_recorded<'tracker>(
+    opts: &RunScript<'tracker>,
+    cmd: &mut Command,
+) -> io::Result<SpawnedChild<'tracker>> {
+    let _prepared = opts.execution.recorder
+        .map(|recorder| recorder.prepare(cmd))
+        .transpose()?;
+    spawn_child(cmd, opts.process_tracker)
 }
 
 fn spawn_error(opts: &RunScript<'_>, command: &str, source: io::Error) -> RunScriptError {

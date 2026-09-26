@@ -45,7 +45,7 @@ pub(super) fn run_project_stages(
             shell: config.script_shell.as_deref().map(Path::new),
             shell_emulator: config.shell_emulator,
             wd_bin_dir: Some(&bin_dir),
-            launcher: &[],
+            recorder: None,
         },
         dep_path: &dep_path,
         pkg_root: project_dir,

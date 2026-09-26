@@ -70,34 +70,17 @@ impl Workspace {
     /// Run the pipeline and return the projects the run report says it
     /// restored from cache.
     fn run_pipeline(&self) -> Vec<&'static str> {
+        self.run_pipeline_with_output().0
+    }
+
+    fn run_pipeline_with_output(&self) -> (Vec<&'static str>, String) {
         let result = self
             .pnpm()
             .args(["pipeline", "--full"])
             .assert()
             .success();
         let output = String::from_utf8_lossy(&result.get_output().stdout).into_owned();
-        eprintln!("{output}");
-        assert!(!output.contains("not every file access"), "{output}");
-        let report_dir = output
-            .lines()
-            .find_map(|line| line.strip_prefix("Report: "))
-            .expect("the pipeline names its report");
-        let events = fs::read_to_string(Path::new(report_dir).join("events.ndjson")).unwrap();
-        let hits: Vec<String> = events
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .filter(|event| event["event"] == "taskFinished" && event["cache"] == "hit")
-            .map(|event| {
-                event["task"]
-                    .as_str()
-                    .unwrap()
-                    .to_string()
-            })
-            .collect();
-        ["lib", "app"]
-            .into_iter()
-            .filter(|project| hits.contains(&format!("{project}#build")))
-            .collect()
+        (cache_hits(&output), output)
     }
 
     fn write(&self, path: &str, contents: &str) {
@@ -107,6 +90,33 @@ impl Workspace {
     fn read(&self, path: &str) -> String {
         fs::read_to_string(self.root.path().join(path)).unwrap()
     }
+}
+
+/// The projects whose `build` the run report of the pipeline that printed
+/// `output` says was restored from cache.
+fn cache_hits(output: &str) -> Vec<&'static str> {
+    eprintln!("{output}");
+    assert!(!output.contains("not every file access"), "{output}");
+    let report_dir = output
+        .lines()
+        .find_map(|line| line.strip_prefix("Report: "))
+        .expect("the pipeline names its report");
+    let events = fs::read_to_string(Path::new(report_dir).join("events.ndjson")).unwrap();
+    let hits: Vec<String> = events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|event| event["event"] == "taskFinished" && event["cache"] == "hit")
+        .map(|event| {
+            event["task"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    ["lib", "app"]
+        .into_iter()
+        .filter(|project| hits.contains(&format!("{project}#build")))
+        .collect()
 }
 
 fn write_project(dir: &Path, name: &str, extra_manifest: &str, files: &str) {
@@ -179,4 +189,68 @@ fn tracked_outputs_combine_with_git_based_inputs() {
     assert_eq!(workspace.read("lib/dist/out.txt"), "lib-source+-");
     workspace.write("lib/src.txt", "lib-changed");
     assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
+}
+
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "file access tracing is implemented for Linux")]
+fn a_task_that_rewrites_an_input_is_not_cached() {
+    let rewrite = "if (require('fs').existsSync('main.txt')) \
+        require('fs').writeFileSync('main.txt', require('fs').readFileSync('main.txt'));\n";
+    let workspace = Workspace::new();
+    workspace.write("build.js", &format!("{rewrite}{BUILD_SCRIPT}"));
+    assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
+    let (hits, output) = workspace.run_pipeline_with_output();
+    assert_eq!(hits, ["lib"]);
+    assert!(output.contains("the task changed app/main.txt after reading it"), "{output}");
+
+    // Excluded from the inputs, the file no longer stops caching. The
+    // changed `inputs` are part of every task's key.
+    workspace.write(
+        "pnpm-workspace.yaml",
+        &WORKSPACE_YAML.replace("'!local.log'", "'!local.log', '!main.txt'"),
+    );
+    assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
+    assert_eq!(workspace.run_pipeline(), ["lib", "app"]);
+}
+
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "file access tracing is implemented for Linux")]
+fn an_input_changed_while_the_task_runs_is_not_cached() {
+    let pause = r"
+const pause = process.env.PIPELINE_TEST_PAUSE;
+if (pause && process.argv.includes('main.txt')) {
+  require('fs').writeFileSync(require('path').join(pause, 'ready'), '');
+  while (!require('fs').existsSync(require('path').join(pause, 'go'))) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+}
+";
+    let workspace = Workspace::new();
+    // Pause after reading the inputs, before writing the output.
+    workspace.write(
+        "build.js",
+        &BUILD_SCRIPT.replace("fs.mkdirSync", &format!("{pause}\nfs.mkdirSync")),
+    );
+    let pause_dir = tempfile::tempdir().unwrap();
+    let mut pipeline = workspace.pnpm();
+    pipeline
+        .args(["pipeline", "--full"])
+        .env("PIPELINE_TEST_PAUSE", pause_dir.path())
+        .stdout(std::process::Stdio::piped());
+    let running = pipeline.spawn().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
+    while !pause_dir.path().join("ready").exists() {
+        assert!(std::time::Instant::now() < deadline, "the build never paused");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    workspace.write("app/main.txt", "app-edited");
+    fs::write(pause_dir.path().join("go"), "").unwrap();
+    let finished = running.wait_with_output().unwrap();
+    assert!(finished.status.success());
+    let output = String::from_utf8_lossy(&finished.stdout).into_owned();
+    assert!(output.contains("app/main.txt changed while the task ran"), "{output}");
+
+    assert_eq!(workspace.run_pipeline(), ["lib"]);
+    assert_eq!(workspace.read("app/dist/out.txt"), "app-edited+lib-source+-");
+    assert_eq!(workspace.run_pipeline(), ["lib", "app"]);
 }

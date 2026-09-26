@@ -5167,6 +5167,7 @@ dependencies = [
  "libc",
  "miette 7.6.0",
  "pnpm-fs",
+ "pnpm-fs-access-tracer",
  "pnpm-package-manifest",
  "pnpm-reporter",
  "pretty_assertions",
@@ -5218,8 +5219,6 @@ name = "pnpm-fs-access-tracer"
 version = "0.0.1"
 dependencies = [
  "libc",
- "serde",
- "serde_json",
  "tempfile",
 ]
 

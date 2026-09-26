@@ -10,7 +10,8 @@ use super::{
     TaskCache, create_hex_hash, create_hex_hash_bytes, create_hex_hash_from_file,
     patterns::FileMatcher,
 };
-use pnpm_fs_access_tracer::FileAccesses;
+use derive_more::Display;
+use pnpm_fs_access_tracer::{FileAccesses, PathState};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -46,6 +47,27 @@ struct TrackedInputs {
     inputs: BTreeMap<String, TrackedInput>,
 }
 
+/// Why a run's result cannot be stored against the inputs it used.
+#[derive(Debug, Display)]
+pub enum Unrecordable {
+    #[display(
+        "the task changed {_0} after reading it, so its result is not cached. To cache it, add the \
+         file to the task's `outputs` or exclude it from its `inputs` with `!`"
+    )]
+    ModifiedInput(String),
+    #[display("{_0} changed while the task ran, so its result is not cached")]
+    ChangedDuringRun(String),
+    #[display("recording the inputs of the task: {_0}")]
+    Io(io::Error),
+}
+
+/// An observed input: how the run used it, and the paths, as the run named
+/// them, that resolve to it.
+struct ObservedInput {
+    access: Access,
+    named: Vec<PathBuf>,
+}
+
 /// Which observed paths are a task's inputs: those inside the workspace,
 /// outside `node_modules` (the lockfile covers dependencies), not written
 /// by the run itself, and inside the project only when neither a declared
@@ -78,62 +100,90 @@ impl TaskCache {
 
     /// Record the inputs a successful run of the tracked task with
     /// `base_key` used, and return the key its result belongs under.
+    ///
+    /// A run that modified one of its inputs, or whose inputs something
+    /// else changed while it ran, is not recorded: the result would be
+    /// stored against contents it was not built from.
     pub fn record_tracked_inputs(
         &self,
         base_key: &str,
         accesses: &FileAccesses,
         scope: &TrackingScope<'_>,
-    ) -> io::Result<String> {
-        let inputs: BTreeMap<String, TrackedInput> = self
-            .observed_inputs(accesses, scope)
-            .into_iter()
-            .map(|(path, access)| {
-                let fingerprint = fingerprint(&self.canonical_root.join(&path), access);
-                (path, TrackedInput { access, fingerprint })
+    ) -> Result<String, Unrecordable> {
+        let project_dir = canonical(scope.project_dir);
+        if let Some(modified) = accesses.modified_reads
+            .iter()
+            .find_map(|path| self.input_relative_path(path, &project_dir, scope))
+        {
+            return Err(Unrecordable::ModifiedInput(modified));
+        }
+        let observed = self.observed_inputs(accesses, &project_dir, scope);
+        let inputs: BTreeMap<String, TrackedInput> = observed
+            .iter()
+            .map(|(path, input)| {
+                let fingerprint = fingerprint(&self.canonical_root.join(path), input.access);
+                (path.clone(), TrackedInput { access: input.access, fingerprint })
             })
             .collect();
+        if let Some(changed) = changed_input(accesses, &observed) {
+            return Err(Unrecordable::ChangedDuringRun(changed));
+        }
         let key = tracked_key(base_key, &inputs);
         let path = self.tracked_inputs_path(base_key);
-        fs::create_dir_all(path.parent().expect("the record has a parent directory"))?;
+        fs::create_dir_all(path.parent().expect("the record has a parent directory"))
+            .map_err(Unrecordable::Io)?;
         let record = TrackedInputs { version: TRACKED_INPUTS_VERSION, inputs };
-        pnpm_fs::write_atomic(&path, &serde_json::to_vec(&record)?)?;
+        let json = serde_json::to_vec(&record).map_err(|error| Unrecordable::Io(error.into()))?;
+        pnpm_fs::write_atomic(&path, &json).map_err(Unrecordable::Io)?;
         Ok(key)
-    }
-
-    /// A fresh directory for the traces of one run.
-    pub fn trace_dir(&self) -> io::Result<tempfile::TempDir> {
-        tempfile::Builder::new().prefix(".trace-").tempdir_in(&self.state_dir)
     }
 
     fn observed_inputs(
         &self,
         accesses: &FileAccesses,
+        project_dir: &Path,
         scope: &TrackingScope<'_>,
-    ) -> BTreeMap<String, Access> {
+    ) -> BTreeMap<String, ObservedInput> {
         let written: HashSet<PathBuf> = accesses.writes
             .iter()
             .map(|path| canonical(path))
             .collect();
-        let project_dir = canonical(scope.project_dir);
-        let mut inputs: BTreeMap<String, Access> = BTreeMap::new();
+        let mut inputs: BTreeMap<String, ObservedInput> = BTreeMap::new();
         for (paths, access) in [
             (&accesses.probes, Access::Probe),
             (&accesses.listings, Access::List),
             (&accesses.reads, Access::Read),
         ] {
-            for path in paths {
-                let path = canonical(path);
-                if written.contains(&path) || !self.is_input(&path, &project_dir, scope) {
+            for named in paths {
+                let path = canonical(named);
+                if written.contains(&path) {
                     continue;
                 }
-                let Some(relative) = relative_slash_path(&path, &self.canonical_root) else {
+                let Some(relative) = self.input_relative_path(&path, project_dir, scope) else {
                     continue;
                 };
-                let recorded = inputs.entry(relative).or_insert(access);
-                *recorded = (*recorded).max(access);
+                let input = inputs
+                    .entry(relative)
+                    .or_insert(ObservedInput { access, named: Vec::new() });
+                input.access = input.access.max(access);
+                input.named.push(named.clone());
             }
         }
         inputs
+    }
+
+    /// `path` relative to the workspace root when it is one of the task's
+    /// inputs.
+    fn input_relative_path(
+        &self,
+        path: &Path,
+        project_dir: &Path,
+        scope: &TrackingScope<'_>,
+    ) -> Option<String> {
+        let path = canonical(path);
+        self.is_input(&path, project_dir, scope)
+            .then(|| relative_slash_path(&path, &self.canonical_root))
+            .flatten()
     }
 
     fn is_input(&self, path: &Path, project_dir: &Path, scope: &TrackingScope<'_>) -> bool {
@@ -156,6 +206,44 @@ impl TaskCache {
         self.state_dir
             .join("tracked")
             .join(format!("{base_key}.json"))
+    }
+}
+
+/// The first input whose state now differs from the one the run saw.
+fn changed_input(
+    accesses: &FileAccesses,
+    observed: &BTreeMap<String, ObservedInput>,
+) -> Option<String> {
+    let written_into: HashSet<&Path> = accesses.writes
+        .iter()
+        .filter_map(|path| path.parent())
+        .collect();
+    observed
+        .iter()
+        .find(|(_, input)| {
+            input.named
+                .iter()
+                .any(|named| has_changed(accesses, named, input.access, &written_into))
+        })
+        .map(|(path, _)| path.clone())
+}
+
+/// Whether `named` changed since the run first accessed it, by what its
+/// fingerprint covers: a listed directory the run wrote into changed
+/// through the run itself, and a probe only sees the kind of entry.
+fn has_changed(
+    accesses: &FileAccesses,
+    named: &Path,
+    access: Access,
+    written_into: &HashSet<&Path>,
+) -> bool {
+    let Some(seen) = accesses.observed.get(named) else { return false };
+    let now = PathState::of(named);
+    match access {
+        Access::List if written_into.contains(named) => false,
+        Access::List => *seen != now,
+        Access::Read if !seen.is_dir() => *seen != now,
+        _ => !seen.same_entry(&now),
     }
 }
 

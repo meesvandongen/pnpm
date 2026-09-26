@@ -25,8 +25,8 @@ pub(super) struct RunTaskOptions<'a, 'graph> {
 pub(crate) struct TaskEnvironment<'a> {
     pub(super) init_cwd: &'a Path,
     pub(super) extra_env: &'a HashMap<String, String>,
-    /// See [`pnpm_executor::ScriptExecutionOptions::launcher`].
-    pub(super) launcher: &'a [std::ffi::OsString],
+    /// See [`pnpm_executor::ScriptExecutionOptions::recorder`].
+    pub(super) recorder: Option<&'a pnpm_fs_access_tracer::Recorder>,
 }
 
 #[derive(Clone, Copy)]
@@ -419,7 +419,7 @@ fn pipeline_script_context<'a>(
         // The pipeline never bails, so there is no cancellation to
         // propagate into running children.
         process_tracker: None,
-        launcher: options.environment.launcher,
+        recorder: options.environment.recorder,
         emit: options.reporting.emit,
     }
 }
