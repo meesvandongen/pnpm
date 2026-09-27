@@ -5,13 +5,14 @@
 //! core utility for pnpm's core utilities, and a script whose interpreter
 //! is one of those runs under the swapped interpreter. Any other protected
 //! program runs unrecorded, and never logging that it began, it makes the
-//! record incomplete. The hook's variables are kept in the environment of
-//! whatever runs.
+//! record incomplete. So does a program the hook cannot load into, which
+//! runs without it where macOS does not strip it. The hook's variables are
+//! kept in the environment of whatever runs.
 
 use super::{
     SETUP, Setup, absolute,
     interpose::interpose,
-    launch::{pointers, shebang, strings, with_hook_env},
+    launch::{loads_hook, pointers, shebang, strings, with_hook_env, without_hook},
     log_path,
 };
 use libc::{c_char, c_int, pid_t, posix_spawn_file_actions_t, posix_spawnattr_t};
@@ -176,7 +177,8 @@ unsafe fn launch(
     // SAFETY: the caller's guarantee; this process's own environment when
     // the call names none.
     let env = unsafe { strings(if envp.is_null() { environ } else { envp }) };
-    let env = with_hook_env(setup, env);
+    let env =
+        if loads_hook(&program) { with_hook_env(setup, env) } else { without_hook(setup, env) };
     let argv_ptrs = pointers(&args);
     let envp_ptrs = pointers(&env);
     Some(Launch {

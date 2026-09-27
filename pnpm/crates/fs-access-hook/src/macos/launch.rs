@@ -70,6 +70,81 @@ pub(super) fn with_hook_env(setup: &Setup, env: Vec<CString>) -> Vec<CString> {
     kept
 }
 
+/// `env` without the hook in `DYLD_INSERT_LIBRARIES`, for a program the
+/// hook cannot load into.
+pub(super) fn without_hook(setup: &Setup, env: Vec<CString>) -> Vec<CString> {
+    env.into_iter()
+        .filter_map(|entry| {
+            let Some(value) = entry
+                .as_bytes()
+                .strip_prefix(INSERT_ENV.as_bytes())
+                .and_then(|rest| rest.strip_prefix(b"="))
+            else {
+                return Some(entry);
+            };
+            let others: Vec<&[u8]> = value
+                .split(|byte| *byte == b':')
+                .filter(|library| *library != setup.hook.as_slice())
+                .collect();
+            let mut kept = INSERT_ENV.as_bytes().to_vec();
+            kept.push(b'=');
+            kept.extend(others.join(&b':'));
+            (!others.is_empty())
+                .then(|| CString::new(kept).ok())
+                .flatten()
+        })
+        .collect()
+}
+
+/// Whether dyld can load the hook into `program`. It refuses an arm64
+/// library in an arm64e process, the ABI Apple builds its own programs for,
+/// and a program with an arm64e slice runs as one. A script runs as its
+/// interpreter.
+pub(super) fn loads_hook(program: &Path) -> bool {
+    let interpreter = shebang(program).map(|(interpreter, _)| interpreter);
+    cfg!(not(target_arch = "aarch64"))
+        || !has_arm64e_slice(interpreter.as_deref().unwrap_or(program))
+}
+
+fn has_arm64e_slice(binary: &Path) -> bool {
+    const FAT_MAGIC: u32 = 0xcafe_babe;
+    const FAT_MAGIC_64: u32 = 0xcafe_babf;
+    const MH_MAGIC_64_BYTES: u32 = 0xcffa_edfe;
+    let mut head = [0u8; 4096];
+    let Ok(read) = std::fs::File::open(binary).and_then(|mut file| file.read(&mut head)) else {
+        return false;
+    };
+    let head = &head[..read];
+    let word = |offset: usize, read: fn([u8; 4]) -> u32| {
+        head.get(offset..offset + 4)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(read)
+    };
+    let fat_slices = |entry_len: usize| {
+        let count = word(4, u32::from_be_bytes).unwrap_or(0).min(64) as usize;
+        (0..count).any(|index| {
+            let at = 8 + index * entry_len;
+            is_arm64e(word(at, u32::from_be_bytes), word(at + 4, u32::from_be_bytes))
+        })
+    };
+    match word(0, u32::from_be_bytes) {
+        Some(FAT_MAGIC) => fat_slices(20),
+        Some(FAT_MAGIC_64) => fat_slices(32),
+        Some(MH_MAGIC_64_BYTES) => {
+            is_arm64e(word(4, u32::from_le_bytes), word(8, u32::from_le_bytes))
+        }
+        _ => false,
+    }
+}
+
+fn is_arm64e(cpu_type: Option<u32>, cpu_subtype: Option<u32>) -> bool {
+    const CPU_TYPE_ARM64: u32 = 0x0100_000c;
+    const CPU_SUBTYPE_ARM64E: u32 = 2;
+    const CPU_SUBTYPE_MASK: u32 = 0xff00_0000;
+    cpu_type == Some(CPU_TYPE_ARM64)
+        && cpu_subtype.is_some_and(|subtype| subtype & !CPU_SUBTYPE_MASK == CPU_SUBTYPE_ARM64E)
+}
+
 /// # Safety
 ///
 /// `array` is null or a null-terminated array of NUL-terminated strings.
