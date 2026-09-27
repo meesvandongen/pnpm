@@ -10,7 +10,6 @@ mod writes;
 use pnpm_detours_sys::{DetourFindPayloadEx, DetourIsHelperProcess, DetourRestoreAfterWith};
 use pnpm_fs_access_protocol::{Event, LOG_DIR_ENV, WINDOWS_PAYLOAD_GUID};
 use std::{
-    cell::Cell,
     ffi::{OsString, c_void},
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::PathBuf,
@@ -48,22 +47,6 @@ pub(crate) struct Injection {
 }
 
 pub(crate) static INJECTION: OnceLock<Injection> = OnceLock::new();
-
-thread_local! {
-    /// Set while the hook itself runs, so the calls it makes pass through.
-    static IN_HOOK: Cell<bool> = const { Cell::new(false) };
-}
-
-/// Run `record` unless the current thread is already inside the hook.
-pub(crate) fn guarded(record: impl FnOnce()) {
-    let entered = IN_HOOK
-        .try_with(|busy| !busy.replace(true))
-        .unwrap_or(false);
-    if entered {
-        record();
-        let _ = IN_HOOK.try_with(|busy| busy.set(false));
-    }
-}
 
 pub(crate) fn pid() -> u32 {
     // SAFETY: no preconditions.

@@ -2,10 +2,11 @@
 //! Detours. Each hook logs the access, then makes the call as it was made.
 
 use super::{
-    guarded, path_buf, path_bytes,
+    path_buf, path_bytes,
     paths::{ObjectAttributes, UnicodeString, handle_path, object_path},
     spawn, writes,
 };
+use crate::log::guarded;
 use pnpm_detours_sys::{
     DetourAttach, DetourTransactionBegin, DetourTransactionCommit, DetourUpdateThread,
 };

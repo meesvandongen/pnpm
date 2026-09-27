@@ -131,10 +131,10 @@ pub(crate) unsafe fn log_at(access: Access, dirfd: c_int, path: *const c_char) {
     }
     // SAFETY: the caller's guarantee.
     let name = unsafe { CStr::from_ptr(path) }.to_bytes();
-    match absolute(dirfd, name) {
+    crate::log::guarded(|| match absolute(dirfd, name) {
         Some(path) => log_path(access, &path),
         None => crate::log::write(Event::Unrecorded),
-    }
+    });
 }
 
 /// Log an access of the directory or file open as `fd`.
@@ -142,10 +142,10 @@ pub(crate) fn log_fd(access: Access, fd: c_int) {
     if !recording() {
         return;
     }
-    match fd_path(fd) {
+    crate::log::guarded(|| match fd_path(fd) {
         Some(path) => log_path(access, &path),
         None => crate::log::write(Event::Unrecorded),
-    }
+    });
 }
 
 pub(crate) fn log_path(access: Access, path: &Path) {

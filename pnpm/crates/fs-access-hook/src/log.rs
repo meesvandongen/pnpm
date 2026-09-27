@@ -9,6 +9,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(crate) const MAX_PATH_BYTES: usize = 4096 * 2;
 
 use crate::os;
+use std::cell::Cell;
+
+thread_local! {
+    /// Set while the hook itself runs, so the calls it makes pass through:
+    /// the library functions it calls may make interposed or hooked calls
+    /// of their own (`getcwd` opening `.`, for one).
+    static IN_HOOK: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run `record` unless the current thread is already inside the hook.
+pub(crate) fn guarded(record: impl FnOnce()) {
+    let entered = IN_HOOK
+        .try_with(|busy| !busy.replace(true))
+        .unwrap_or(false);
+    if entered {
+        record();
+        let _ = IN_HOOK.try_with(|busy| busy.set(false));
+    }
+}
 
 /// Append `event` to the log. An event too large to log is replaced by
 /// [`Event::Unrecorded`], which tells pnpm the record is incomplete.

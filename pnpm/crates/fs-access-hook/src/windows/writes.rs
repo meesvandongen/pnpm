@@ -2,11 +2,11 @@
 //! (renames, links, deletions), and process creation.
 
 use super::{
-    guarded,
     hooks::{Status, log_object, log_path, original},
     path_bytes,
     paths::{ObjectAttributes, dos_path, handle_path},
 };
+use crate::log::guarded;
 use pnpm_fs_access_protocol::{Access, Event};
 use std::{
     ffi::{CStr, c_void},
