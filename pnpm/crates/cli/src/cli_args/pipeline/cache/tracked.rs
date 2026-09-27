@@ -20,15 +20,19 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+mod name_pattern;
+
 const TRACKED_INPUTS_VERSION: u32 = 1;
 
 /// How a run used an input, which decides what its fingerprint covers: the
-/// contents of a file read, the entries of a directory listed, and only
-/// the kind (or absence) of a path probed.
+/// contents of a file read, the entries of a directory listed, the entries
+/// matching a Windows directory query's pattern (the input's last path
+/// component), and only the kind (or absence) of a path probed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Access {
     Probe,
+    Match,
     List,
     Read,
 }
@@ -151,11 +155,12 @@ impl TaskCache {
         let mut inputs: BTreeMap<String, ObservedInput> = BTreeMap::new();
         for (paths, access) in [
             (&accesses.probes, Access::Probe),
+            (&accesses.matches, Access::Match),
             (&accesses.listings, Access::List),
             (&accesses.reads, Access::Read),
         ] {
             for named in paths {
-                let path = canonical(named);
+                let path = canonical_input(named, access);
                 if written.contains(&path) {
                     continue;
                 }
@@ -230,8 +235,8 @@ fn changed_input(
 }
 
 /// Whether `named` changed since the run first accessed it, by what its
-/// fingerprint covers: a listed directory the run wrote into changed
-/// through the run itself, and a probe only sees the kind of entry.
+/// fingerprint covers: a listed or matched directory the run wrote into
+/// changed through the run itself, and a probe only sees the kind of entry.
 fn has_changed(
     accesses: &FileAccesses,
     named: &Path,
@@ -239,13 +244,13 @@ fn has_changed(
     written_into: &HashSet<PathBuf>,
 ) -> bool {
     let Some(seen) = accesses.observed.get(named) else { return false };
-    let now = PathState::of(named);
-    match access {
-        Access::List if written_into.contains(&canonical(named)) => false,
-        Access::List => *seen != now,
-        Access::Read if !seen.is_dir() => *seen != now,
-        _ => !seen.same_entry(&now),
-    }
+    let dir = match access {
+        Access::List => named,
+        Access::Match => named.parent().unwrap_or(named),
+        Access::Read if !seen.is_dir() => return *seen != PathState::of(named),
+        Access::Read | Access::Probe => return !seen.same_entry(&PathState::of(named)),
+    };
+    !written_into.contains(&canonical(dir)) && *seen != PathState::of(dir)
 }
 
 /// The files inside `project_dir` that `accesses` wrote and that are
@@ -279,6 +284,9 @@ fn tracked_key(base_key: &str, inputs: &BTreeMap<String, TrackedInput>) -> Strin
 
 /// What `access` observed of `path`, recomputed the same way on every run.
 fn fingerprint(path: &Path, access: Access) -> String {
+    if access == Access::Match {
+        return matching_entries(path);
+    }
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if is_missing(&error) => return "missing".to_string(),
@@ -300,17 +308,35 @@ fn fingerprint(path: &Path, access: Access) -> String {
     match (access, file_type.is_file(), file_type.is_dir()) {
         (Access::Read, true, _) => create_hex_hash_from_file(path)
             .map_or_else(|_| "unreadable".to_string(), |hash| format!("file:{hash}")),
-        (Access::List, _, true) => format!("dir:{}", listing_hash(path)),
+        (Access::List, _, true) => format!("dir:{}", listing_hash(path, |_| true)),
         (_, true, _) => "file".to_string(),
         (_, _, true) => "dir".to_string(),
         _ => "other".to_string(),
     }
 }
 
-fn listing_hash(dir: &Path) -> String {
+/// The fingerprint of the entries matching the pattern that ends
+/// `pattern_path`, in the directory it names.
+fn matching_entries(pattern_path: &Path) -> String {
+    let (Some(dir), Some(pattern)) = (pattern_path.parent(), pattern_path.file_name()) else {
+        return "other".to_string();
+    };
+    let pattern = pattern.to_string_lossy();
+    match fs::metadata(dir) {
+        Ok(metadata) if metadata.is_dir() => {
+            format!("dir:{}", listing_hash(dir, |name| name_pattern::matches(&pattern, name)))
+        }
+        Ok(_) => "other".to_string(),
+        Err(error) if is_missing(&error) => "missing".to_string(),
+        Err(error) => format!("unreadable:{:?}", error.kind()),
+    }
+}
+
+fn listing_hash(dir: &Path, include: impl Fn(&str) -> bool) -> String {
     let Ok(entries) = fs::read_dir(dir) else { return "unreadable".to_string() };
     let mut names: Vec<String> = entries
         .filter_map(Result::ok)
+        .filter(|entry| include(&entry.file_name().to_string_lossy()))
         .map(|entry| {
             let kind = entry
                 .file_type()
@@ -324,6 +350,15 @@ fn listing_hash(dir: &Path) -> String {
 
 fn is_missing(error: &io::Error) -> bool {
     matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory)
+}
+
+/// `named` with its symlinks resolved. A pattern is not a path, so only
+/// its directory is.
+fn canonical_input(named: &Path, access: Access) -> PathBuf {
+    match (access, named.parent(), named.file_name()) {
+        (Access::Match, Some(dir), Some(pattern)) => canonical(dir).join(pattern),
+        _ => canonical(named),
+    }
 }
 
 /// `path` with its symlinks resolved, or normalized as written when it

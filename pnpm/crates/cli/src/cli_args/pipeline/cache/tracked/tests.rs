@@ -89,6 +89,21 @@ fn a_listed_directory_invalidates_when_its_entries_change() {
 }
 
 #[test]
+fn a_matched_pattern_invalidates_only_when_its_matching_entries_change() {
+    let fixture = fixture();
+    let mut accesses = FileAccesses::default();
+    // What `cmd` asks for when it looks for `index` in `src`.
+    accesses.matches.insert(fixture.project.join("src/index\"*"));
+    let key = record(&fixture, &accesses);
+    assert_eq!(recorded_paths(&fixture), ["app/src/index\"*"]);
+    fs::write(fixture.project.join("src/other.js"), "new").unwrap();
+    fs::write(fixture.project.join("src/index.js"), "changed").unwrap();
+    assert_eq!(fixture.cache.tracked_key("base").as_deref(), Some(key.as_str()));
+    fs::write(fixture.project.join("src/index.cmd"), "new").unwrap();
+    assert_ne!(fixture.cache.tracked_key("base").as_deref(), Some(key.as_str()));
+}
+
+#[test]
 fn only_workspace_paths_the_task_did_not_produce_are_inputs() {
     let fixture = fixture();
     let modules = fixture.project.join("node_modules/dep");

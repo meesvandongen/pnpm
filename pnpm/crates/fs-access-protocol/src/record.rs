@@ -14,6 +14,12 @@ pub enum Access {
     Write = 3,
     /// Opened for both reading and writing without truncating.
     ReadWrite = 4,
+    /// The entries of a directory whose names match a pattern were read.
+    /// The path is the directory joined with the pattern, in the wildcard
+    /// syntax of the Windows directory queries (`*`, `?`, and the DOS
+    /// wildcards `<`, `>`, and `"`), none of which a Windows file name can
+    /// contain. The state is the directory's.
+    Match = 5,
 }
 
 /// What a process of the recorded tree did. Paths are native bytes: the
@@ -136,6 +142,7 @@ fn decode(bytes: &[u8]) -> Option<Record<'_>> {
                     2 => Access::List,
                     3 => Access::Write,
                     4 => Access::ReadWrite,
+                    5 => Access::Match,
                     _ => return None,
                 },
                 state: match has_state {

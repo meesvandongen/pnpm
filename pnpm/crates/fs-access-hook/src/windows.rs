@@ -3,6 +3,7 @@
 //! hooks the `ntdll` file system calls and process creation.
 
 mod hooks;
+mod listing;
 mod paths;
 mod spawn;
 mod writes;

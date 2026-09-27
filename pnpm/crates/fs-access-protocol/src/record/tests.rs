@@ -26,6 +26,11 @@ fn records_survive_encoding() {
             time: 3,
             event: Event::Accessed { access: Access::Write, state: None, path: b"/w/out" },
         },
+        Record {
+            pid: 7,
+            time: 3,
+            event: Event::Accessed { access: Access::Match, state: Some(state), path: b"/w/a*" },
+        },
         Record { pid: 7, time: 4, event: Event::Spawned { child: 8, image: b"/bin/sh" } },
         Record { pid: 8, time: 5, event: Event::Executing { image: b"/bin/ls" } },
         Record { pid: 8, time: 6, event: Event::ExecFailed },

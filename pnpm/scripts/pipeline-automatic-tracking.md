@@ -29,7 +29,9 @@ pnpm records:
 The paths the task read, checked, or listed inside the workspace become its
 inputs. A read file is fingerprinted by its contents, a listed directory by its
 entry names, and a checked path only by whether it exists and what kind of
-entry it is. On the next run pnpm fingerprints the same paths again. If every
+entry it is. On Windows, a program can also ask a directory for the entries
+whose names match a pattern, the way `cmd` looks for `node.*` when a script
+runs `node`. Such a query is fingerprinted by the names that match. On the next run pnpm fingerprints the same paths again. If every
 fingerprint matches, the stored result is restored; otherwise the task runs and
 its new record replaces the old one.
 

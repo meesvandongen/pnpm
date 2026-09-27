@@ -2,8 +2,8 @@
 //! Detours. Each hook logs the access, then makes the call as it was made.
 
 use super::{
-    path_buf, path_bytes,
-    paths::{ObjectAttributes, UnicodeString, handle_path, object_path},
+    listing, path_buf, path_bytes,
+    paths::{ObjectAttributes, object_path},
     spawn, writes,
 };
 use crate::log::guarded;
@@ -53,37 +53,10 @@ type NtOpenFile = unsafe extern "system" fn(
 ) -> Status;
 type NtQueryAttributesFile =
     unsafe extern "system" fn(*const ObjectAttributes, *mut c_void) -> Status;
-type NtQueryDirectoryFile = unsafe extern "system" fn(
-    HANDLE,
-    HANDLE,
-    *mut c_void,
-    *mut c_void,
-    *mut c_void,
-    *mut c_void,
-    u32,
-    u32,
-    u8,
-    *const UnicodeString,
-    u8,
-) -> Status;
-type NtQueryDirectoryFileEx = unsafe extern "system" fn(
-    HANDLE,
-    HANDLE,
-    *mut c_void,
-    *mut c_void,
-    *mut c_void,
-    *mut c_void,
-    u32,
-    u32,
-    u32,
-    *const UnicodeString,
-) -> Status;
 static NT_CREATE_FILE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static NT_OPEN_FILE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static NT_QUERY_ATTRIBUTES_FILE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static NT_QUERY_FULL_ATTRIBUTES_FILE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-static NT_QUERY_DIRECTORY_FILE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-static NT_QUERY_DIRECTORY_FILE_EX: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 /// A function to hook: where it lives, the slot that keeps the original,
 /// and whether the record is incomplete without it.
@@ -111,21 +84,10 @@ fn hooks() -> Vec<Hook> {
             nt_query_full_attributes_file as *mut c_void,
             true,
         ),
-        (
-            c"NtQueryDirectoryFile",
-            &NT_QUERY_DIRECTORY_FILE,
-            nt_query_directory_file as *mut c_void,
-            true,
-        ),
-        (
-            c"NtQueryDirectoryFileEx",
-            &NT_QUERY_DIRECTORY_FILE_EX,
-            nt_query_directory_file_ex as *mut c_void,
-            false,
-        ),
     ];
     let ntdll = files
         .into_iter()
+        .chain(listing::hooks())
         .chain(writes::hooks())
         .map(|(name, original, detour, required)| Hook {
             module: w!("ntdll.dll"),
@@ -136,6 +98,7 @@ fn hooks() -> Vec<Hook> {
         });
     let kernelbase = spawn::hooks()
         .into_iter()
+        .chain(listing::kernelbase_hooks())
         .map(|(module, name, original, detour)| Hook {
             module,
             name,
@@ -311,76 +274,4 @@ unsafe extern "system" fn nt_query_full_attributes_file(
     let real: NtQueryAttributesFile = original(&NT_QUERY_FULL_ATTRIBUTES_FILE);
     // SAFETY: the call as the process made it.
     unsafe { real(attributes, information) }
-}
-
-fn log_listing(handle: HANDLE) {
-    guarded(|| {
-        if let Some(path) = handle_path(handle) {
-            log_path(Access::List, &path);
-        }
-    });
-}
-
-unsafe extern "system" fn nt_query_directory_file(
-    handle: HANDLE,
-    event: HANDLE,
-    apc_routine: *mut c_void,
-    apc_context: *mut c_void,
-    io_status: *mut c_void,
-    information: *mut c_void,
-    length: u32,
-    class: u32,
-    single: u8,
-    name: *const UnicodeString,
-    restart: u8,
-) -> Status {
-    log_listing(handle);
-    let real: NtQueryDirectoryFile = original(&NT_QUERY_DIRECTORY_FILE);
-    // SAFETY: the call as the process made it.
-    unsafe {
-        real(
-            handle,
-            event,
-            apc_routine,
-            apc_context,
-            io_status,
-            information,
-            length,
-            class,
-            single,
-            name,
-            restart,
-        )
-    }
-}
-
-unsafe extern "system" fn nt_query_directory_file_ex(
-    handle: HANDLE,
-    event: HANDLE,
-    apc_routine: *mut c_void,
-    apc_context: *mut c_void,
-    io_status: *mut c_void,
-    information: *mut c_void,
-    length: u32,
-    class: u32,
-    flags: u32,
-    name: *const UnicodeString,
-) -> Status {
-    log_listing(handle);
-    let real: NtQueryDirectoryFileEx = original(&NT_QUERY_DIRECTORY_FILE_EX);
-    // SAFETY: the call as the process made it.
-    unsafe {
-        real(
-            handle,
-            event,
-            apc_routine,
-            apc_context,
-            io_status,
-            information,
-            length,
-            class,
-            flags,
-            name,
-        )
-    }
 }

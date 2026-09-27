@@ -77,12 +77,23 @@ fn records_writes_and_listings() {
 fn records_missing_paths_as_probes() {
     let (_temp, dir) = fixture();
     let accesses = recorded(&dir, "if exist missing.txt (echo yes) else (echo no)");
-    // `cmd` checks the path itself, or lists its directory for the name.
-    let missing = dir.join("missing.txt");
+    assert!(contains(&accesses.probes, &dir.join("missing.txt")));
+    assert!(!contains(&accesses.listings, &dir));
+}
+
+#[test]
+fn a_program_search_matches_names_without_listing_the_directory() {
+    let (_temp, dir) = fixture();
+    let accesses = recorded(&dir, "pnpm-no-such-program 2> nul & exit 0");
+    assert!(!contains(&accesses.listings, &dir));
     assert!(
-        contains(&accesses.probes, &missing)
-            || contains(&accesses.reads, &missing)
-            || contains(&accesses.listings, &dir)
+        accesses.matches
+            .iter()
+            .any(|pattern| {
+                pattern
+                    .parent()
+                    .is_some_and(|parent| normalized(parent) == normalized(&dir))
+            })
     );
 }
 

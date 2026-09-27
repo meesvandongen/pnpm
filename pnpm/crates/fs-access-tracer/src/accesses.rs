@@ -16,6 +16,11 @@ pub struct FileAccesses {
     pub reads: BTreeSet<PathBuf>,
     /// Directories whose entries were read.
     pub listings: BTreeSet<PathBuf>,
+    /// Directories whose entries matching a name pattern were read, as the
+    /// directory joined with the pattern. Only Windows queries a directory
+    /// by pattern; see `Access::Match` in `pnpm-fs-access-protocol` for the
+    /// syntax.
+    pub matches: BTreeSet<PathBuf>,
     /// Checked for existence or metadata without reading contents: `stat`,
     /// `access`, `readlink`, and opens of a directory or an `O_PATH`
     /// descriptor. A path that did not exist is included.
@@ -26,7 +31,7 @@ pub struct FileAccesses {
     pub writes: BTreeSet<PathBuf>,
     /// The state each path in `reads`, `listings`, and `probes` had when
     /// the command first accessed it, for telling whether it changed while
-    /// the command ran.
+    /// the command ran. A path in `matches` has its directory's state.
     pub observed: BTreeMap<PathBuf, PathState>,
     /// Files the command read while they existed and wrote afterwards:
     /// inputs it modified.
@@ -39,15 +44,14 @@ impl FileAccesses {
     /// on the first read, probe, or listing of the path.
     pub(crate) fn note(&mut self, access: Access, path: &Path, state: impl FnOnce() -> PathState) {
         let path = clean(path);
-        if matches!(access, Access::Read | Access::Probe | Access::List | Access::ReadWrite)
-            && !self.observed.contains_key(&path)
-        {
+        if !matches!(access, Access::Write) && !self.observed.contains_key(&path) {
             self.observed.insert(path.clone(), state());
         }
         match access {
             Access::Read => self.reads.insert(path),
             Access::Probe => self.probes.insert(path),
             Access::List => self.listings.insert(path),
+            Access::Match => self.matches.insert(path),
             Access::Write => self.note_write(path),
             Access::ReadWrite => {
                 self.reads.insert(path.clone());
