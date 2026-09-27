@@ -8,26 +8,60 @@
 //! commands it prepares, so a script that spawns `node`, which spawns a
 //! compiler, is recorded as one task.
 //!
-//! Recording is implemented for Linux 5.8 and later on x86-64 and 64-bit
-//! Arm. A seccomp filter hands each file system call to a supervisor thread
-//! in the recording process, which notes the call's paths and lets the
-//! kernel run it. [`IS_SUPPORTED`] is `false` on every other platform.
+//! How it records depends on the platform:
+//!
+//! - Linux 5.8 and later (x86-64, 64-bit Arm): a seccomp filter hands each
+//!   file system call to a supervisor thread in the recording process,
+//!   which notes the call's paths and lets the kernel run it.
+//! - macOS and Windows: a hook library loaded into every process of the
+//!   tree (`pnpm-fs-access-hook`) logs the accesses from inside, and pnpm
+//!   reads the logs back (see `pnpm-fs-access-protocol`).
+//!
+//! [`IS_SUPPORTED`] is `false` on every other platform.
 
-pub use accesses::{FileAccesses, PathState};
+pub use accesses::FileAccesses;
+pub use pnpm_fs_access_protocol::PathState;
 
 mod accesses;
+#[cfg(any(target_os = "macos", windows, test))]
+mod log;
+
+#[cfg(any(windows, target_os = "macos"))]
+mod artifact;
 
 #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 mod linux;
 #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 use linux as platform;
 
-#[cfg(not(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows as platform;
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos as platform;
+
+#[cfg(not(any(
+    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    windows,
+    target_os = "macos",
+)))]
 mod unsupported;
-#[cfg(not(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
+#[cfg(not(any(
+    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    windows,
+    target_os = "macos",
+)))]
 use unsupported as platform;
 
-use std::{fmt, io, process::Command};
+use std::{
+    ffi::OsStr,
+    fmt, io,
+    process::{Child, Command},
+};
 
 /// Whether this build of pnpm can record file accesses at all. A supported
 /// build can still find the running system unable to, which
@@ -50,24 +84,29 @@ impl std::error::Error for Unsupported {}
 /// up, and of every process they start, until [`Recorder::finish`].
 pub struct Recorder(platform::Recorder);
 
-/// Returned by [`Recorder::prepare`]; keep it until the command has been
-/// spawned (or failed to spawn).
-#[must_use = "dropping it before the command is spawned stops the recording"]
-pub struct Prepared {
-    _held: platform::Prepared,
-}
+/// Returned by [`Recorder::prepare`]. Hand it the process once the command
+/// has spawned, with [`Prepared::started`]; drop it when the command
+/// failed to spawn.
+#[must_use = "a prepared command's process must be reported with `started`"]
+pub struct Prepared(platform::Prepared);
 
 impl Recorder {
     pub fn new() -> Result<Self, Unsupported> {
         platform::Recorder::new().map(Recorder)
     }
 
+    /// A command that runs `program`. Where the platform keeps its own
+    /// programs from being recorded (the system shell on macOS), a
+    /// recordable equivalent runs instead.
+    #[must_use]
+    pub fn command(&self, program: &OsStr) -> Command {
+        self.0.command(program)
+    }
+
     /// Set `command` up so that the process it spawns, and every process
     /// that one starts, is recorded.
     pub fn prepare(&self, command: &mut Command) -> io::Result<Prepared> {
-        self.0
-            .prepare(command)
-            .map(|held| Prepared { _held: held })
+        self.0.prepare(command).map(Prepared)
     }
 
     /// Stop recording and return what was recorded, or `None` when some of
@@ -79,5 +118,14 @@ impl Recorder {
     #[must_use]
     pub fn finish(self) -> Option<FileAccesses> {
         self.0.finish()
+    }
+}
+
+impl Prepared {
+    /// Report the process the prepared command spawned. Call it right
+    /// after the spawn: on Windows the process waits, suspended, until
+    /// then.
+    pub fn started(self, child: &Child) {
+        self.0.started(child);
     }
 }

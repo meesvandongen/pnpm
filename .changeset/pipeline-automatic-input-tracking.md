@@ -13,4 +13,4 @@ tasks:
 
 pnpm does not cache a run that changed a file it read, or whose inputs changed while it ran.
 
-Automatic tracking needs Linux 5.8 or later. On other platforms, and with `shellEmulator` enabled, such a task runs without the cache and pnpm prints a warning.
+Automatic tracking works on Linux 5.8 or later, macOS, and Windows. On macOS, tracked scripts run with a POSIX shell and core utilities that pnpm ships, because macOS does not let pnpm observe its own. A task whose file accesses cannot all be observed, such as one that runs another macOS system program, runs without the cache, and pnpm prints a warning.

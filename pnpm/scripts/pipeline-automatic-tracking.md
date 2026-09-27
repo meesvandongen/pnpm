@@ -86,26 +86,51 @@ Environment reads are not observed.
 
 ## Requirements and limits
 
-Tracking uses seccomp user notifications and needs Linux 5.8 or later on x86-64
-or 64-bit Arm. Elsewhere, and when `shellEmulator` is enabled, a task with
-`{ auto: true }` in its `inputs` runs without the cache, and so do the tasks
-that depend on it. pnpm prints a warning explaining why.
+Tracking works on Linux, macOS, and Windows. On each, a task whose file
+accesses cannot all be observed still runs, but its result is not cached,
+and pnpm prints a warning. With `shellEmulator` enabled, tracked tasks run
+without the cache, and so do the tasks that depend on them.
 
-Each file system call a traced process makes waits for pnpm to record it. On
-Linux 6.6 and later the kernel hands the call to pnpm on the same CPU, which
-costs a few microseconds per call. Older kernels take longer per call. Other
+### Linux
+
+Tracking uses seccomp user notifications and needs Linux 5.8 or later on x86-64
+or 64-bit Arm. Each file system call a traced process makes waits for pnpm to
+record it. On Linux 6.6 and later the kernel hands the call to pnpm on the same
+CPU, which costs a few microseconds per call; older kernels take longer. Other
 system calls run at full speed.
 
 A sandbox that forbids seccomp filters, or reading a traced process's memory,
-leaves the trace incomplete. The task still runs, but its result is not cached
-and pnpm prints a warning. The same happens when part of the process tree runs
-a 32-bit program.
-
+leaves the trace incomplete, and so does a 32-bit program in the process tree.
 A traced process cannot gain privileges through a set-user-ID program such as
 `sudo`, and cannot set up `io_uring`, so programs fall back to ordinary system
-calls. Processes a script leaves running in the background keep running, but
-their file accesses after the script exits are not recorded. Once pnpm exits,
-their file system calls fail.
+calls.
+
+### macOS
+
+pnpm loads a library into every process of the task through
+`DYLD_INSERT_LIBRARIES`. The library records the task's file accesses from
+inside each process, so they cost about as much as the calls themselves.
+
+macOS does not load the library into its own programs under `/bin`, `/usr/bin`,
+and similar directories. pnpm therefore runs the task's scripts with its own
+POSIX shell ([Oils](https://oils.pub)) instead of `/bin/sh`, and runs the core
+utilities (`cp`, `rm`, `mkdir`, `cat`, `env`, and the rest of
+[uutils](https://github.com/uutils/coreutils)) in place of the system's. A task
+that runs another system program, such as `/usr/bin/git`, or a program that
+refuses the library, runs without the cache.
+
+### Windows
+
+pnpm loads a library into every process of the task with
+[Detours](https://github.com/microsoft/Detours). The library records the
+task's file accesses from inside each process. A task that starts a 32-bit
+program, or starts a process the library cannot follow, runs without the cache.
+
+### On every platform
+
+Processes a script leaves running in the background keep running, but their
+file accesses after the script exits are not recorded. On Linux, their file
+system calls fail once pnpm exits.
 
 A task with `cargoTargetDir` keeps its Git-based inputs, which its Cargo
 snapshots are keyed on. `{ auto: true }` in its `inputs` has no effect.

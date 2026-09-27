@@ -1,0 +1,20 @@
+[package]
+name = "pnpm-detours-sys"
+description = "Microsoft Detours, compiled for Windows targets, with the bindings pnpm uses"
+version = "0.0.1"
+publish = false
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Security"] }
+
+[build-dependencies]
+cc = { workspace = true }
+
+[lints]
+workspace = true

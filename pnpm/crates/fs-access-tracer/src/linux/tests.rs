@@ -10,8 +10,9 @@ use std::{
 fn record(mut command: Command) -> (ExitStatus, Option<FileAccesses>) {
     let recorder = Recorder::new().expect("this kernel supports recording");
     let prepared = recorder.prepare(&mut command).expect("prepare the command");
-    let status = command.status().expect("run the command");
-    drop(prepared);
+    let mut child = command.spawn().expect("run the command");
+    prepared.started(&child);
+    let status = child.wait().expect("wait for the command");
     let accesses = recorder.finish();
     dbg!(&accesses);
     (status, accesses)
@@ -137,8 +138,9 @@ fn records_every_prepared_command() {
         let mut command = Command::new("cat");
         command.arg(dir.join(file));
         let prepared = recorder.prepare(&mut command).unwrap();
-        command.status().unwrap();
-        drop(prepared);
+        let mut child = command.spawn().unwrap();
+        prepared.started(&child);
+        child.wait().unwrap();
     }
     let accesses = recorder.finish().expect("every access is recorded");
     assert!(accesses.reads.contains(&dir.join("first.txt")));

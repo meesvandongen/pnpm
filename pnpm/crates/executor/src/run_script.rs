@@ -207,7 +207,7 @@ fn run_in_shell(
     command: &str,
     child_env: &HashMap<String, String>,
 ) -> Result<ScriptExit, RunScriptError> {
-    let mut cmd = shell_command(shell, command);
+    let mut cmd = shell_command(opts, shell, command);
     cmd.current_dir(opts.pkg_root)
         .env_clear()
         .envs(child_env);
@@ -228,7 +228,7 @@ fn run_piped(
     child_env: &HashMap<String, String>,
     streamed: StreamedScript<'_>,
 ) -> Result<ScriptExit, RunScriptError> {
-    let mut cmd = shell_command(shell, command);
+    let mut cmd = shell_command(opts, shell, command);
     cmd.current_dir(opts.pkg_root)
         .env_clear()
         .envs(child_env)
@@ -243,8 +243,11 @@ fn run_piped(
         .map_err(|source| RunScriptError::Wait { script: command.to_string(), source })
 }
 
-fn shell_command(shell: &SelectedShell, command: &str) -> Command {
-    let mut cmd = Command::new(&shell.program);
+fn shell_command(opts: &RunScript<'_>, shell: &SelectedShell, command: &str) -> Command {
+    let mut cmd = match opts.execution.recorder {
+        Some(recorder) => recorder.command(shell.program.as_ref()),
+        None => Command::new(&shell.program),
+    };
     cmd.args(&shell.args);
     push_script_arg(&mut cmd, command, shell.windows_verbatim_args);
     cmd
@@ -255,10 +258,14 @@ fn spawn_recorded<'tracker>(
     opts: &RunScript<'tracker>,
     cmd: &mut Command,
 ) -> io::Result<SpawnedChild<'tracker>> {
-    let _prepared = opts.execution.recorder
+    let prepared = opts.execution.recorder
         .map(|recorder| recorder.prepare(cmd))
         .transpose()?;
-    spawn_child(cmd, opts.process_tracker)
+    let mut child = spawn_child(cmd, opts.process_tracker)?;
+    if let Some(prepared) = prepared {
+        prepared.started(child.child_mut());
+    }
+    Ok(child)
 }
 
 fn spawn_error(opts: &RunScript<'_>, command: &str, source: io::Error) -> RunScriptError {

@@ -15,15 +15,16 @@ mod syscalls;
 use crate::{FileAccesses, PathState, Unsupported};
 use filter::{Filter, NATIVE_AUDIT_ARCH};
 use notify::{Listener, Notification, Sizes, Wait};
+use pnpm_fs_access_protocol::Access;
 use process::Process;
 use std::{
+    ffi::OsStr,
     io, mem,
     os::{
         fd::{AsRawFd, OwnedFd},
         unix::process::CommandExt,
     },
-    path::{Path, PathBuf},
-    process::Command,
+    process::{Child, Command},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -46,6 +47,13 @@ pub struct Recorder {
 
 pub struct Prepared {
     _child_end: OwnedFd,
+}
+
+impl Prepared {
+    /// Closes this process's copy of the command's end of the socket, so a
+    /// command that exits without reporting ends the supervisor's wait.
+    #[expect(clippy::unused_self, reason = "consumed to close the socket end")]
+    pub fn started(self, _: &Child) {}
 }
 
 struct Shared {
@@ -74,6 +82,11 @@ impl Recorder {
             )),
             sizes,
         })
+    }
+
+    #[expect(clippy::unused_self, reason = "the signature of the other platforms' recorders")]
+    pub fn command(&self, program: &OsStr) -> Command {
+        Command::new(program)
     }
 
     pub fn prepare(&self, command: &mut Command) -> io::Result<Prepared> {
@@ -188,29 +201,17 @@ impl Shared {
         if self.finished.load(Ordering::Relaxed) {
             return;
         }
-        match effect {
-            Effect::Read(path) => {
-                let path = observe(&mut accesses, &path);
-                accesses.reads.insert(path);
-            }
-            Effect::Probe(path) => {
-                let path = observe(&mut accesses, &path);
-                accesses.probes.insert(path);
-            }
-            Effect::List(path) => {
-                let path = observe(&mut accesses, &path);
-                accesses.listings.insert(path);
-            }
-            Effect::Write(paths) => {
-                for path in paths {
-                    note_write(&mut accesses, &path);
-                }
-            }
-            Effect::ReadWrite(path) => {
-                let path = observe(&mut accesses, &path);
-                accesses.reads.insert(path.clone());
-                note_write(&mut accesses, &path);
-            }
+        // The state is taken before the call is let through, so it is the
+        // one the call saw.
+        let (access, paths) = match effect {
+            Effect::Read(path) => (Access::Read, vec![path]),
+            Effect::Probe(path) => (Access::Probe, vec![path]),
+            Effect::List(path) => (Access::List, vec![path]),
+            Effect::Write(paths) => (Access::Write, paths),
+            Effect::ReadWrite(path) => (Access::ReadWrite, vec![path]),
+        };
+        for path in paths {
+            accesses.note(access, &path, || PathState::of(&path));
         }
     }
 
@@ -219,32 +220,6 @@ impl Shared {
             self.incomplete.store(true, Ordering::SeqCst);
         }
     }
-}
-
-/// Note the state of `path` the first time it is accessed. Runs before the
-/// call is let through, so the state is the one the call saw.
-fn observe(accesses: &mut FileAccesses, path: &Path) -> PathBuf {
-    let path = clean(path);
-    if !accesses.observed.contains_key(&path) {
-        let state = PathState::of(&path);
-        accesses.observed.insert(path.clone(), state);
-    }
-    path
-}
-
-fn note_write(accesses: &mut FileAccesses, path: &Path) {
-    let path = clean(path);
-    let read_while_present = accesses.reads.contains(&path)
-        && accesses.observed.get(&path).is_some_and(PathState::exists);
-    if read_while_present && !accesses.writes.contains(&path) {
-        accesses.modified_reads.insert(path.clone());
-    }
-    accesses.writes.insert(path);
-}
-
-/// `path` without `.` components, repeated separators, or a trailing one.
-fn clean(path: &Path) -> PathBuf {
-    path.components().collect()
 }
 
 fn kernel_is_at_least(minimum: (u32, u32)) -> bool {

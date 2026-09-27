@@ -131,7 +131,6 @@ fn write_project(dir: &Path, name: &str, extra_manifest: &str, files: &str) {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "file access tracing is implemented for Linux")]
 fn tracked_inputs_are_the_files_a_task_reads() {
     let workspace = Workspace::new();
     assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
@@ -153,7 +152,6 @@ fn tracked_inputs_are_the_files_a_task_reads() {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "file access tracing is implemented for Linux")]
 fn tracked_outputs_are_restored_from_the_cache() {
     let workspace = Workspace::new();
     assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
@@ -163,7 +161,6 @@ fn tracked_outputs_are_restored_from_the_cache() {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "file access tracing is implemented for Linux")]
 fn excluded_inputs_do_not_invalidate() {
     let workspace = Workspace::new();
     fs::write(
@@ -177,7 +174,6 @@ fn excluded_inputs_do_not_invalidate() {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "file access tracing is implemented for Linux")]
 fn tracked_outputs_combine_with_git_based_inputs() {
     let workspace = Workspace::with_manifest(&WORKSPACE_YAML.replace(
         "inputs: [{ auto: true }, '!local.log']",
@@ -192,7 +188,6 @@ fn tracked_outputs_combine_with_git_based_inputs() {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "file access tracing is implemented for Linux")]
 fn a_task_that_rewrites_an_input_is_not_cached() {
     let rewrite = "if (require('fs').existsSync('main.txt')) \
         require('fs').writeFileSync('main.txt', require('fs').readFileSync('main.txt'));\n";
@@ -214,7 +209,6 @@ fn a_task_that_rewrites_an_input_is_not_cached() {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "file access tracing is implemented for Linux")]
 fn an_input_changed_while_the_task_runs_is_not_cached() {
     let pause = r"
 const pause = process.env.PIPELINE_TEST_PAUSE;

@@ -1,5 +1,9 @@
 use crate::{FileAccesses, Unsupported};
-use std::{io, process::Command};
+use std::{
+    ffi::OsStr,
+    io,
+    process::{Child, Command},
+};
 
 pub const IS_SUPPORTED: bool = false;
 
@@ -8,9 +12,19 @@ pub struct Recorder;
 
 pub struct Prepared;
 
+impl Prepared {
+    #[expect(clippy::unused_self, reason = "the signature of the Linux recorder")]
+    pub fn started(self, _: &Child) {}
+}
+
 impl Recorder {
     pub fn new() -> Result<Self, Unsupported> {
         Err(Unsupported("recording file accesses is not supported on this platform"))
+    }
+
+    #[expect(clippy::unused_self, reason = "the signature of the Linux recorder")]
+    pub fn command(&self, program: &OsStr) -> Command {
+        Command::new(program)
     }
 
     #[expect(clippy::unused_self, reason = "the signature of the Linux recorder")]

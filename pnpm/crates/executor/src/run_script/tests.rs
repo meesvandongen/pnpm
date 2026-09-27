@@ -134,21 +134,27 @@ fn run_script_prepends_node_modules_bin_to_path() {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "file access recording is implemented for Linux")]
 fn run_script_records_the_scripts_file_accesses() {
-    let dir = tempdir().expect("temp dir");
-    let dir = dir
-        .path()
-        .canonicalize()
-        .expect("canonical temp dir");
+    let temp = tempdir().expect("temp dir");
+    let dir = dunce::canonicalize(temp.path()).expect("canonical temp dir");
     fs::write(dir.join("input.txt"), "input").expect("write the input");
     let recorder = pnpm_fs_access_tracer::Recorder::new().expect("recording is supported");
+    let copy =
+        if cfg!(windows) { "type input.txt > output.txt" } else { "cat input.txt > output.txt" };
 
-    let status = run_recorded(&dir, "build", "cat input.txt > output.txt", &[], Some(&recorder));
+    let status = run_recorded(&dir, "build", copy, &[], Some(&recorder));
     assert!(status.success());
     let accesses = recorder.finish().expect("every access is recorded");
-    assert!(accesses.reads.contains(&dir.join("input.txt")));
-    assert!(accesses.writes.contains(&dir.join("output.txt")));
+    dbg!(&accesses);
+    // The recorded paths are as the script named them, which on Windows
+    // may use short names for the temporary directory.
+    let names = |paths: &std::collections::BTreeSet<std::path::PathBuf>, file: &str| {
+        paths
+            .iter()
+            .any(|path| dunce::canonicalize(path).is_ok_and(|path| path == dir.join(file)))
+    };
+    assert!(names(&accesses.reads, "input.txt"));
+    assert!(names(&accesses.writes, "output.txt"));
 }
 
 #[test]

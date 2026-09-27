@@ -214,9 +214,10 @@ fn changed_input(
     accesses: &FileAccesses,
     observed: &BTreeMap<String, ObservedInput>,
 ) -> Option<String> {
-    let written_into: HashSet<&Path> = accesses.writes
+    let written_into: HashSet<PathBuf> = accesses.writes
         .iter()
         .filter_map(|path| path.parent())
+        .map(canonical)
         .collect();
     observed
         .iter()
@@ -235,12 +236,12 @@ fn has_changed(
     accesses: &FileAccesses,
     named: &Path,
     access: Access,
-    written_into: &HashSet<&Path>,
+    written_into: &HashSet<PathBuf>,
 ) -> bool {
     let Some(seen) = accesses.observed.get(named) else { return false };
     let now = PathState::of(named);
     match access {
-        Access::List if written_into.contains(named) => false,
+        Access::List if written_into.contains(&canonical(named)) => false,
         Access::List => *seen != now,
         Access::Read if !seen.is_dir() => *seen != now,
         _ => !seen.same_entry(&now),
