@@ -1,4 +1,4 @@
-use crate::{FileAccesses, Unsupported};
+use crate::{FileAccesses, Unobserved, Unsupported};
 use std::{
     ffi::OsStr,
     io,
@@ -33,7 +33,7 @@ impl Recorder {
     }
 
     #[expect(clippy::unused_self, reason = "the signature of the Linux recorder")]
-    pub fn finish(self) -> Option<FileAccesses> {
-        None
+    pub fn finish(self) -> Result<FileAccesses, Unobserved> {
+        Err(Unobserved::Attach)
     }
 }

@@ -60,6 +60,7 @@ use unsupported as platform;
 use std::{
     ffi::OsStr,
     fmt, io,
+    path::PathBuf,
     process::{Child, Command},
 };
 
@@ -79,6 +80,43 @@ impl fmt::Display for Unsupported {
 }
 
 impl std::error::Error for Unsupported {}
+
+/// Why [`Recorder::finish`] cannot vouch for every access of the record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unobserved {
+    /// A program of the tree ran without the recorder following it, such
+    /// as a macOS system program. The path is empty when the program is
+    /// not known.
+    Program(PathBuf),
+    /// A process made a file system call the recorder could not follow.
+    Call,
+    /// A process's log of its accesses could not be read whole.
+    Log,
+    /// The recorder could not attach to the command.
+    Attach,
+}
+
+impl fmt::Display for Unobserved {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Unobserved::Program(path) if path.as_os_str().is_empty() => {
+                formatter.write_str("a program ran without the recorder")
+            }
+            Unobserved::Program(path) => {
+                write!(formatter, "{} ran without the recorder", path.display())
+            }
+            Unobserved::Call => formatter.write_str(
+                "a process made a file system call the recorder could not follow",
+            ),
+            Unobserved::Log => formatter.write_str("the log of a process's accesses was cut short"),
+            Unobserved::Attach => {
+                formatter.write_str("the recorder could not attach to the command")
+            }
+        }
+    }
+}
+
+impl std::error::Error for Unobserved {}
 
 /// Records the file accesses of the commands [`Recorder::prepare`] sets
 /// up, and of every process they start, until [`Recorder::finish`].
@@ -109,14 +147,12 @@ impl Recorder {
         self.0.prepare(command).map(Prepared)
     }
 
-    /// Stop recording and return what was recorded, or `None` when some of
-    /// it could not be observed: a process ran unrecorded, or made a call
-    /// the recorder could not decode.
+    /// Stop recording and return what was recorded, or why some of it
+    /// could not be observed.
     ///
     /// Processes a prepared command left running keep running, but what
     /// they access from now on is not recorded.
-    #[must_use]
-    pub fn finish(self) -> Option<FileAccesses> {
+    pub fn finish(self) -> Result<FileAccesses, Unobserved> {
         self.0.finish()
     }
 }

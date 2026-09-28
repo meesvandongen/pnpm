@@ -12,7 +12,7 @@ mod notify;
 mod process;
 mod syscalls;
 
-use crate::{FileAccesses, PathState, Unsupported};
+use crate::{FileAccesses, PathState, Unobserved, Unsupported};
 use filter::{Filter, NATIVE_AUDIT_ARCH};
 use notify::{Listener, Notification, Sizes, Wait};
 use pnpm_fs_access_protocol::Access;
@@ -26,7 +26,7 @@ use std::{
     },
     process::{Child, Command},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -58,8 +58,9 @@ impl Prepared {
 
 struct Shared {
     accesses: Mutex<FileAccesses>,
-    /// Set when something ran unrecorded or a call could not be decoded.
-    incomplete: AtomicBool,
+    /// The first thing the record missed: a command the filter did not
+    /// reach, or a call that could not be decoded.
+    unobserved: OnceLock<Unobserved>,
     finished: AtomicBool,
 }
 
@@ -73,7 +74,7 @@ impl Recorder {
         Ok(Recorder {
             shared: Arc::new(Shared {
                 accesses: Mutex::new(FileAccesses::default()),
-                incomplete: AtomicBool::new(false),
+                unobserved: OnceLock::new(),
                 finished: AtomicBool::new(false),
             }),
             filter: Arc::new(Filter::new(
@@ -109,11 +110,14 @@ impl Recorder {
         Ok(Prepared { _child_end: child_end })
     }
 
-    pub fn finish(self) -> Option<FileAccesses> {
+    pub fn finish(self) -> Result<FileAccesses, Unobserved> {
         let mut accesses = self.shared.accesses.lock().expect("the record lock is not poisoned");
         self.shared.finished.store(true, Ordering::SeqCst);
         let accesses = mem::take(&mut *accesses);
-        (!self.shared.incomplete.load(Ordering::SeqCst)).then_some(accesses)
+        match self.shared.unobserved.get() {
+            Some(unobserved) => Err(unobserved.clone()),
+            None => Ok(accesses),
+        }
     }
 }
 
@@ -150,7 +154,7 @@ fn install_and_hand_over(filter: &Filter, socket: i32) {
 /// process it filters is gone.
 fn supervise(socket: &OwnedFd, shared: &Arc<Shared>, sizes: Sizes) {
     let Ok(Some(fd)) = handoff::receive(socket) else {
-        shared.mark_incomplete();
+        shared.mark_unobserved(Unobserved::Attach);
         return;
     };
     let listener = Listener::new(fd, sizes);
@@ -174,7 +178,7 @@ fn serve(mut listener: Listener, shared: &Shared) {
             Err(_) => break,
         }
     }
-    shared.mark_incomplete();
+    shared.mark_unobserved(Unobserved::Call);
 }
 
 impl Shared {
@@ -192,7 +196,7 @@ impl Shared {
             // A thread that died while its call waited leaves nothing to
             // decode and nothing to miss.
             _ if !listener.is_pending(notification.id) => {}
-            _ => self.mark_incomplete(),
+            _ => self.mark_unobserved(Unobserved::Call),
         }
     }
 
@@ -215,9 +219,9 @@ impl Shared {
         }
     }
 
-    fn mark_incomplete(&self) {
+    fn mark_unobserved(&self, unobserved: Unobserved) {
         if !self.finished.load(Ordering::SeqCst) {
-            self.incomplete.store(true, Ordering::SeqCst);
+            let _ = self.unobserved.set(unobserved);
         }
     }
 }

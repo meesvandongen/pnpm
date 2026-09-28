@@ -126,13 +126,16 @@ fn execute_recorded(
     if execution.status != Status::Passed {
         return Ok((execution, None));
     }
-    if accesses.is_none() {
+    if let Err(unobserved) = &accesses {
         task_warning(
             options,
-            "not every file access of the task could be observed, so its result is not cached",
+            &format!(
+                "not every file access of the task could be observed ({unobserved}), so its \
+                 result is not cached"
+            ),
         );
     }
-    Ok((execution, accesses))
+    Ok((execution, accesses.ok()))
 }
 
 /// Record the inputs a run used, and return the key its result belongs

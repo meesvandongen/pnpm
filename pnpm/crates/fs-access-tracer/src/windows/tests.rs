@@ -1,4 +1,4 @@
-use crate::{FileAccesses, Recorder};
+use crate::{FileAccesses, Recorder, Unobserved};
 use std::{
     collections::BTreeSet,
     fs,
@@ -6,7 +6,7 @@ use std::{
     process::ExitStatus,
 };
 
-fn record_cmd(dir: &Path, script: &str) -> (ExitStatus, Option<FileAccesses>) {
+fn record_cmd(dir: &Path, script: &str) -> (ExitStatus, Result<FileAccesses, Unobserved>) {
     let recorder = Recorder::new().expect("this system supports recording");
     let mut command = recorder.command("cmd.exe".as_ref());
     command

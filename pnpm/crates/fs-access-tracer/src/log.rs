@@ -1,29 +1,21 @@
 //! Reading back the access logs that hook libraries write inside a
 //! recorded process tree (see [`pnpm_fs_access_protocol`]).
 
-use crate::FileAccesses;
+use crate::{FileAccesses, Unobserved};
 use pnpm_fs_access_protocol::{Event, Record, decode_all, native_path};
 use std::{collections::HashMap, fs, io, path::Path};
 
-/// The accesses every log in `dir` records, or `None` when some process of
-/// the tree ran without the hook: a log was cut short, a created process
-/// never started the hook, or an `exec` neither failed nor started it.
-pub(crate) fn read_logs(dir: &Path) -> io::Result<Option<FileAccesses>> {
-    let mut contents = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        contents.push(fs::read(entry?.path())?);
-    }
+/// The accesses every log in `dir` records, or why some process of the
+/// tree ran without the hook: a log was cut short, a created process never
+/// started the hook, or an `exec` neither failed nor started it.
+pub(crate) fn read_logs(dir: &Path) -> Result<FileAccesses, Unobserved> {
+    let contents = read_all(dir).map_err(|_| Unobserved::Log)?;
     let mut records: Vec<Record<'_>> = Vec::new();
     for log in &contents {
-        match decode_all(log) {
-            Ok(decoded) => records.extend(decoded),
-            Err(_) => return Ok(None),
-        }
+        records.extend(decode_all(log).map_err(|_| Unobserved::Log)?);
     }
     records.sort_by_key(|record| record.time);
-    if !every_process_began(&records) {
-        return Ok(None);
-    }
+    every_process_began(&records)?;
     let mut accesses = FileAccesses::default();
     for record in &records {
         if let Event::Accessed { access, state, path } = record.event {
@@ -31,12 +23,18 @@ pub(crate) fn read_logs(dir: &Path) -> io::Result<Option<FileAccesses>> {
             accesses.note(access, &path, || state.unwrap_or_else(|| crate::PathState::of(&path)));
         }
     }
-    Ok(Some(accesses))
+    Ok(accesses)
 }
 
-/// Whether every process the records create or `exec` also began the
+fn read_all(dir: &Path) -> io::Result<Vec<Vec<u8>>> {
+    fs::read_dir(dir)?
+        .map(|entry| fs::read(entry?.path()))
+        .collect()
+}
+
+/// Check that every process the records create or `exec` also began the
 /// hook, which is what makes its accesses part of the record.
-fn every_process_began(records: &[Record<'_>]) -> bool {
+fn every_process_began(records: &[Record<'_>]) -> Result<(), Unobserved> {
     let mut began: HashMap<u32, Vec<u64>> = HashMap::new();
     for record in records {
         if let Event::Began { .. } = record.event {
@@ -53,21 +51,29 @@ fn every_process_began(records: &[Record<'_>]) -> bool {
     };
     // The records are in time order, so a process's last `exec` is the
     // one that decides.
-    let mut pending_exec: HashMap<u32, u64> = HashMap::new();
+    let mut pending_exec: HashMap<u32, (u64, &[u8])> = HashMap::new();
     for record in records {
         match record.event {
-            Event::Spawned { child, .. } if !began.contains_key(&child) => return false,
-            Event::Executing { .. } => {
-                pending_exec.insert(record.pid, record.time);
+            Event::Spawned { child, image } if !began.contains_key(&child) => {
+                return Err(Unobserved::Program(native_path(image)));
+            }
+            Event::Executing { image } => {
+                pending_exec.insert(record.pid, (record.time, image));
             }
             Event::ExecFailed => {
                 pending_exec.remove(&record.pid);
             }
-            Event::Unrecorded => return false,
+            Event::Unrecorded => return Err(Unobserved::Call),
             _ => {}
         }
     }
-    pending_exec.into_iter().all(|(pid, time)| began_after(pid, time))
+    match pending_exec
+        .into_iter()
+        .find(|(pid, (time, _))| !began_after(*pid, *time))
+    {
+        Some((_, (_, image))) => Err(Unobserved::Program(native_path(image))),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]

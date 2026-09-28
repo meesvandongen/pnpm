@@ -1,4 +1,5 @@
 use super::read_logs;
+use crate::Unobserved;
 use pnpm_fs_access_protocol::{
     Access, Event, PathState, Record, encode, max_record_len, native_bytes,
 };
@@ -42,7 +43,7 @@ fn the_logs_of_every_process_are_merged_in_time_order() {
             accessed(2, 3, Access::Read, &bytes),
         ],
     );
-    let accesses = read_logs(dir.path()).unwrap().expect("every process began");
+    let accesses = read_logs(dir.path()).expect("every process began");
     assert!(accesses.reads.contains(&file));
     assert!(accesses.modified_reads.contains(&file), "read by 2, then written by 1");
 }
@@ -55,7 +56,7 @@ fn a_created_process_that_never_began_is_incomplete() {
         "parent.log",
         &[Record { pid: 1, time: 1, event: Event::Spawned { child: 2, image: b"/usr/bin/git" } }],
     );
-    assert_eq!(read_logs(dir.path()).unwrap(), None);
+    assert_eq!(read_logs(dir.path()), Err(Unobserved::Program("/usr/bin/git".into())));
 }
 
 #[test]
@@ -72,9 +73,9 @@ fn an_exec_must_fail_or_begin_the_hook_again() {
             Record { pid: 1, time: 4, event: Event::Began { image: b"/bin/x" } },
         ],
     );
-    assert!(read_logs(dir.path()).unwrap().is_some());
+    assert!(read_logs(dir.path()).is_ok());
     write_log(dir.path(), "b.log", &[executing(5)]);
-    assert_eq!(read_logs(dir.path()).unwrap(), None);
+    assert_eq!(read_logs(dir.path()), Err(Unobserved::Program("/bin/x".into())));
 }
 
 #[test]
@@ -87,5 +88,5 @@ fn a_cut_log_is_incomplete() {
     );
     let log = fs::read(dir.path().join("a.log")).unwrap();
     fs::write(dir.path().join("a.log"), &log[..log.len() - 1]).unwrap();
-    assert_eq!(read_logs(dir.path()).unwrap(), None);
+    assert_eq!(read_logs(dir.path()), Err(Unobserved::Log));
 }

@@ -1,5 +1,5 @@
 use super::parse_release;
-use crate::{FileAccesses, PathState, Recorder};
+use crate::{FileAccesses, PathState, Recorder, Unobserved};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn record(mut command: Command) -> (ExitStatus, Option<FileAccesses>) {
+fn record(mut command: Command) -> (ExitStatus, Result<FileAccesses, Unobserved>) {
     let recorder = Recorder::new().expect("this kernel supports recording");
     let prepared = recorder.prepare(&mut command).expect("prepare the command");
     let mut child = command.spawn().expect("run the command");

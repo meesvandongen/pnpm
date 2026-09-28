@@ -5,7 +5,7 @@
 //! command names is swapped for pnpm's, as the hook does for the shells
 //! and core utilities the command runs.
 
-use crate::{FileAccesses, Unsupported, artifact::embedded, log::read_logs};
+use crate::{FileAccesses, Unobserved, Unsupported, artifact::embedded, log::read_logs};
 use pnpm_fs_access_protocol::{Event, LOG_DIR_ENV, Record, encode, max_record_len};
 use std::{
     ffi::{OsStr, OsString},
@@ -133,9 +133,11 @@ impl Recorder {
         Ok(Prepared { shared: Arc::clone(&self.shared) })
     }
 
-    pub fn finish(self) -> Option<FileAccesses> {
-        let accesses = read_logs(self.shared.log_dir.path()).ok().flatten()?;
-        (!self.shared.incomplete.load(Ordering::SeqCst)).then_some(accesses)
+    pub fn finish(self) -> Result<FileAccesses, Unobserved> {
+        if self.shared.incomplete.load(Ordering::SeqCst) {
+            return Err(Unobserved::Attach);
+        }
+        read_logs(self.shared.log_dir.path())
     }
 }
 

@@ -1,11 +1,11 @@
-use crate::{FileAccesses, Recorder};
+use crate::{FileAccesses, Recorder, Unobserved};
 use std::{
     fs,
     path::{Path, PathBuf},
     process::ExitStatus,
 };
 
-fn record_sh(dir: &Path, script: &str) -> (ExitStatus, Option<FileAccesses>) {
+fn record_sh(dir: &Path, script: &str) -> (ExitStatus, Result<FileAccesses, Unobserved>) {
     let recorder = Recorder::new().expect("this system supports recording");
     let mut command = recorder.command("sh".as_ref());
     command
@@ -70,7 +70,7 @@ fn a_system_program_without_a_stand_in_makes_the_record_incomplete() {
         "/usr/bin/true && /usr/bin/uname > /dev/null && /usr/bin/xattr -h > /dev/null",
     );
     assert!(status.success());
-    assert_eq!(accesses, None);
+    assert_eq!(accesses, Err(Unobserved::Program("/usr/bin/xattr".into())));
 }
 
 #[test]
