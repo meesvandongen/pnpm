@@ -68,16 +68,26 @@ unsafe extern "system" fn nt_set_information_file(
     length: u32,
     class: u32,
 ) -> Status {
-    guarded(|| {
-        // SAFETY: the information the process passed, `length` bytes long.
-        let info = unsafe { std::slice::from_raw_parts(information.cast::<u8>(), length as usize) };
-        for path in changed_paths(handle, class, info) {
-            log_path(Access::Write, &path);
-        }
-    });
+    if changes_paths(class) && !information.is_null() {
+        guarded(|| {
+            // SAFETY: the information the process passed, `length` bytes long.
+            let info =
+                unsafe { std::slice::from_raw_parts(information.cast::<u8>(), length as usize) };
+            for path in changed_paths(handle, class, info) {
+                log_path(Access::Write, &path);
+            }
+        });
+    }
     let real: NtSetInformationFile = original(&NT_SET_INFORMATION_FILE);
     // SAFETY: the call as the process made it.
     unsafe { real(handle, io_status, information, length, class) }
+}
+
+/// Whether a `NtSetInformationFile` call of `class` can change a path. The
+/// other classes, which set a file's position, size, or times, are most of
+/// the calls.
+fn changes_paths(class: u32) -> bool {
+    RENAME_OR_LINK_CLASSES.contains(&class) || matches!(class, DISPOSITION | DISPOSITION_EX)
 }
 
 /// The paths a `NtSetInformationFile` call changes: a rename's source and
