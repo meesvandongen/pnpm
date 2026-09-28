@@ -19,9 +19,14 @@ pub(super) struct Process {
 impl Process {
     /// The path a `*at` system call names through `dirfd` and the
     /// NUL-terminated string at `address`, made absolute. `Ok(None)` for an
-    /// empty name (`AT_EMPTY_PATH` operates on `dirfd` itself), and `Err`
-    /// when the name or the directory it is relative to cannot be read.
+    /// empty name (`AT_EMPTY_PATH` operates on `dirfd` itself) and for a
+    /// null one, which fails with `EFAULT` before naming anything (Rust's
+    /// standard library probes for `statx` that way). `Err` when the name or
+    /// the directory it is relative to cannot be read.
     pub(super) fn path_at(self, dirfd: c_int, address: u64) -> Result<Option<PathBuf>, ()> {
+        if address == 0 {
+            return Ok(None);
+        }
         let name = PathBuf::from(OsString::from_vec(self.read_c_string(address).ok_or(())?));
         if name.as_os_str().is_empty() {
             return Ok(None);

@@ -5229,6 +5229,7 @@ dependencies = [
  "libc",
  "pnpm-detours-sys",
  "pnpm-fs-access-protocol",
+ "tempfile",
  "windows-sys 0.61.2",
 ]
 
