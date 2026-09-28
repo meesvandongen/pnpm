@@ -53,10 +53,18 @@ type NtOpenFile = unsafe extern "system" fn(
 ) -> Status;
 type NtQueryAttributesFile =
     unsafe extern "system" fn(*const ObjectAttributes, *mut c_void) -> Status;
+type NtQueryInformationByName = unsafe extern "system" fn(
+    *const ObjectAttributes,
+    *mut c_void,
+    *mut c_void,
+    u32,
+    u32,
+) -> Status;
 static NT_CREATE_FILE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static NT_OPEN_FILE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static NT_QUERY_ATTRIBUTES_FILE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static NT_QUERY_FULL_ATTRIBUTES_FILE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static NT_QUERY_INFORMATION_BY_NAME: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 /// A function to hook: where it lives, the slot that keeps the original,
 /// and whether the record is incomplete without it.
@@ -83,6 +91,14 @@ fn hooks() -> Vec<Hook> {
             &NT_QUERY_FULL_ATTRIBUTES_FILE,
             nt_query_full_attributes_file as *mut c_void,
             true,
+        ),
+        // Windows 11 24H2 and Server 2025 add it, for `GetFileInformationByName`,
+        // which libuv's `stat` uses where it exists.
+        (
+            c"NtQueryInformationByName",
+            &NT_QUERY_INFORMATION_BY_NAME,
+            nt_query_information_by_name as *mut c_void,
+            false,
         ),
     ];
     let ntdll = files
@@ -274,4 +290,17 @@ unsafe extern "system" fn nt_query_full_attributes_file(
     let real: NtQueryAttributesFile = original(&NT_QUERY_FULL_ATTRIBUTES_FILE);
     // SAFETY: the call as the process made it.
     unsafe { real(attributes, information) }
+}
+
+unsafe extern "system" fn nt_query_information_by_name(
+    attributes: *const ObjectAttributes,
+    io_status: *mut c_void,
+    information: *mut c_void,
+    length: u32,
+    class: u32,
+) -> Status {
+    log_object(Access::Probe, attributes);
+    let real: NtQueryInformationByName = original(&NT_QUERY_INFORMATION_BY_NAME);
+    // SAFETY: the call as the process made it.
+    unsafe { real(attributes, io_status, information, length, class) }
 }
