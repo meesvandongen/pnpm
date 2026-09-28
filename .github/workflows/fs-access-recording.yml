@@ -1,0 +1,82 @@
+name: File Access Recording
+
+# The pipeline's automatic input tracking records file accesses with a
+# different mechanism on each platform: seccomp on Linux, an injected
+# library on macOS and Windows. This runs the recorder's tests, and the
+# pipeline tests that use it, on GitHub-hosted runners of all three, so a
+# fork without the main CI's runners still tests them.
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/fs-access-recording.yml'
+      - 'pnpm/crates/cli/src/cli_args/pipeline/**'
+      - 'pnpm/crates/cli/tests/suite/pipeline*'
+      - 'pnpm/crates/detours-sys/**'
+      - 'pnpm/crates/executor/**'
+      - 'pnpm/crates/fs-access-*/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: File Access Recording / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free up runner disk space
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install Rust Toolchain
+        uses: ./.github/actions/rustup
+
+      - name: Install pnpm
+        uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+        with:
+          install: false
+
+      - name: Install Node.js via pnpm
+        run: pnpm runtime set node 22 --global
+
+      - name: Install just and cargo-nextest
+        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just,cargo-nextest
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          unset PNPM_HOME
+          unset XDG_DATA_HOME
+          just install
+
+      - name: Test the recorder and the pipeline
+        shell: bash
+        run: |
+          unset PNPM_HOME
+          unset XDG_DATA_HOME
+          pnpm test:rust --no-fail-fast \
+            -p pnpm-fs-access-protocol -p pnpm-fs-access-tracer -p pnpm-executor -p pnpm-cli \
+            -E 'package(pnpm-fs-access-protocol) | package(pnpm-fs-access-tracer) | test(run_script_records) | test(/pipeline/)'
