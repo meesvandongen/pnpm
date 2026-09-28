@@ -20,6 +20,7 @@ on:
       - 'pnpm/crates/detours-sys/**'
       - 'pnpm/crates/executor/**'
       - 'pnpm/crates/fs-access-*/**'
+      - '.github/scripts/fs-access-real-tools.sh'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
@@ -78,5 +79,15 @@ jobs:
           unset PNPM_HOME
           unset XDG_DATA_HOME
           pnpm test:rust --no-fail-fast \
-            -p pnpm-fs-access-protocol -p pnpm-fs-access-tracer -p pnpm-executor -p pnpm-cli \
-            -E 'package(pnpm-fs-access-protocol) | package(pnpm-fs-access-tracer) | test(run_script_records) | test(/pipeline/)'
+            -p pnpm-fs-access-protocol -p pnpm-fs-access-hook -p pnpm-fs-access-tracer \
+            -p pnpm-executor -p pnpm-cli \
+            -E 'package(pnpm-fs-access-protocol) | package(pnpm-fs-access-hook) | package(pnpm-fs-access-tracer) | test(run_script_records) | test(/pipeline/)'
+
+      - name: Cache real tools with tracked inputs (esbuild, oxlint)
+        if: success() || failure()
+        shell: bash
+        run: |
+          unset PNPM_HOME
+          unset XDG_DATA_HOME
+          cargo build -p pnpm-cli --bin pnpm
+          .github/scripts/fs-access-real-tools.sh "$PWD/target/debug/pnpm"
