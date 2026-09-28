@@ -231,39 +231,23 @@ impl TaskCache {
             entry_dir: PathBuf::new(),
         };
         fs::write(staging_dir.join("meta.json"), serde_json::to_vec_pretty(&meta)?)?;
-        match fs::rename(staging_dir, &entry_dir) {
-            Ok(()) => {}
-            Err(error) => {
-                let destination_exists = matches!(
-                    error.kind(),
-                    io::ErrorKind::AlreadyExists | io::ErrorKind::DirectoryNotEmpty,
-                ) || cfg!(windows)
-                    && error.kind() == io::ErrorKind::PermissionDenied;
-                // Windows can report access denied when a destination directory already exists.
-                if !destination_exists || !self.matches_snapshot(key, &meta)? {
-                    return Err(error);
-                }
+        if let Err(error) = fs::rename(staging_dir, &entry_dir) {
+            // Windows can report access denied when a destination directory already exists.
+            let destination_exists = matches!(
+                error.kind(),
+                io::ErrorKind::AlreadyExists | io::ErrorKind::DirectoryNotEmpty,
+            ) || cfg!(windows)
+                && error.kind() == io::ErrorKind::PermissionDenied;
+            // A run with the same key already stored its result. It stays:
+            // a task whose outputs differ between runs of the same inputs
+            // has more than one right result. This run's outputs are in
+            // the working tree all the same, so they are recorded as
+            // pnpm's, and the next run may restore over them.
+            if !destination_exists || self.lookup(key).is_none() {
+                return Err(error);
             }
         }
         self.write_output_record(task_id, &record)
-    }
-
-    fn matches_snapshot(&self, key: &str, expected: &StoredTask) -> io::Result<bool> {
-        let Some(stored) = self.lookup(key) else {
-            return Ok(false);
-        };
-        if stored.files != expected.files || stored.hashes != expected.hashes {
-            return Ok(false);
-        }
-        for relative in &stored.files {
-            check_ancestors(&stored.entry_dir, &Path::new("outputs").join(relative))?;
-            if create_hex_hash_from_file(&stored.entry_dir.join("outputs").join(relative))?
-                != stored.hashes[relative]
-            {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
 
     fn entry_dir(&self, key: &str) -> PathBuf {
