@@ -32,23 +32,31 @@ impl Workspace {
     }
 
     fn with_manifest(workspace_yaml: &str) -> Self {
+        Workspace::with_files(|dir| {
+            fs::write(dir.join("pnpm-workspace.yaml"), workspace_yaml).unwrap();
+            fs::write(dir.join("build.js"), BUILD_SCRIPT).unwrap();
+            write_project(&dir.join("lib"), "lib", "", "src.txt .env.local");
+            write_project(
+                &dir.join("app"),
+                "app",
+                r#","dependencies":{"lib":"workspace:*"}"#,
+                "main.txt node_modules/lib/dist/out.txt",
+            );
+            fs::write(dir.join("lib/src.txt"), "lib-source").unwrap();
+            fs::write(dir.join("lib/README.md"), "docs").unwrap();
+            fs::write(dir.join("app/main.txt"), "app-source").unwrap();
+        })
+    }
+
+    /// A Git work tree with a root `package.json`, installed once `write`
+    /// has added the workspace manifest and the projects.
+    fn with_files(write: impl FnOnce(&Path)) -> Self {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
         pnpm_testing_utils::git_repo::init_isolated_repo(dir);
         fs::write(dir.join(".gitignore"), "node_modules/\ndist/\n.env.local\n").unwrap();
         fs::write(dir.join("package.json"), r#"{"name":"root","private":true}"#).unwrap();
-        fs::write(dir.join("pnpm-workspace.yaml"), workspace_yaml).unwrap();
-        fs::write(dir.join("build.js"), BUILD_SCRIPT).unwrap();
-        write_project(&dir.join("lib"), "lib", "", "src.txt .env.local");
-        write_project(
-            &dir.join("app"),
-            "app",
-            r#","dependencies":{"lib":"workspace:*"}"#,
-            "main.txt node_modules/lib/dist/out.txt",
-        );
-        fs::write(dir.join("lib/src.txt"), "lib-source").unwrap();
-        fs::write(dir.join("lib/README.md"), "docs").unwrap();
-        fs::write(dir.join("app/main.txt"), "app-source").unwrap();
+        write(dir);
         let workspace = Workspace { root, storage: tempfile::tempdir().unwrap() };
         workspace
             .pnpm()
@@ -74,11 +82,17 @@ impl Workspace {
     }
 
     fn run_pipeline_with_output(&self) -> (Vec<&'static str>, String) {
-        let result = self
-            .pnpm()
-            .args(["pipeline", "--full"])
-            .assert()
-            .success();
+        self.run_configured_pipeline(|_| {})
+    }
+
+    fn run_configured_pipeline(
+        &self,
+        configure: impl FnOnce(&mut Command),
+    ) -> (Vec<&'static str>, String) {
+        let mut command = self.pnpm();
+        command.args(["pipeline", "--full"]);
+        configure(&mut command);
+        let result = command.assert().success();
         let output = String::from_utf8_lossy(&result.get_output().stdout).into_owned();
         (cache_hits(&output), output)
     }
@@ -95,6 +109,16 @@ impl Workspace {
 /// The projects whose `build` the run report of the pipeline that printed
 /// `output` says was restored from cache.
 fn cache_hits(output: &str) -> Vec<&'static str> {
+    let hits = restored_tasks(output);
+    ["lib", "app"]
+        .into_iter()
+        .filter(|project| hits.contains(&format!("{project}#build")))
+        .collect()
+}
+
+/// The tasks the run report of the pipeline that printed `output` says
+/// were restored from cache.
+fn restored_tasks(output: &str) -> Vec<String> {
     eprintln!("{output}");
     assert!(!output.contains("not every file access"), "{output}");
     let report_dir = output
@@ -102,7 +126,7 @@ fn cache_hits(output: &str) -> Vec<&'static str> {
         .find_map(|line| line.strip_prefix("Report: "))
         .expect("the pipeline names its report");
     let events = fs::read_to_string(Path::new(report_dir).join("events.ndjson")).unwrap();
-    let hits: Vec<String> = events
+    events
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
         .filter(|event| event["event"] == "taskFinished" && event["cache"] == "hit")
@@ -112,10 +136,6 @@ fn cache_hits(output: &str) -> Vec<&'static str> {
                 .unwrap()
                 .to_string()
         })
-        .collect();
-    ["lib", "app"]
-        .into_iter()
-        .filter(|project| hits.contains(&format!("{project}#build")))
         .collect()
 }
 
@@ -247,4 +267,132 @@ if (pause && process.argv.includes('main.txt')) {
     assert_eq!(workspace.run_pipeline(), ["lib"]);
     assert_eq!(workspace.read("app/dist/out.txt"), "app-edited+lib-source+-");
     assert_eq!(workspace.run_pipeline(), ["lib", "app"]);
+}
+
+#[test]
+fn a_file_added_to_a_listed_directory_invalidates() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "build.js",
+        &format!(
+            "{BUILD_SCRIPT}if (fs.existsSync('src')) \
+             fs.appendFileSync('dist/out.txt', '+' + fs.readdirSync('src').sort().join(','));\n"
+        ),
+    );
+    fs::create_dir(workspace.root.path().join("lib/src")).unwrap();
+    workspace.write("lib/src/a.txt", "a");
+    assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
+    assert_eq!(workspace.run_pipeline(), ["lib", "app"]);
+    workspace.write("lib/src/b.txt", "b");
+    assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
+    assert_eq!(workspace.read("lib/dist/out.txt"), "lib-source+-+a.txt,b.txt");
+}
+
+#[test]
+fn an_input_glob_beside_auto_adds_files_the_task_never_reads() {
+    let workspace = Workspace::with_manifest(&WORKSPACE_YAML.replace(
+        "'!local.log'",
+        "'config/**', '!local.log'",
+    ));
+    fs::create_dir(workspace.root.path().join("lib/config")).unwrap();
+    workspace.write("lib/config/settings.json", "{}");
+    assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
+    assert_eq!(workspace.run_pipeline(), ["lib", "app"]);
+    workspace.write("lib/config/settings.json", r#"{"changed":true}"#);
+    assert!(!workspace.run_pipeline().contains(&"lib"));
+}
+
+#[test]
+fn a_project_whose_directory_name_is_a_glob_pattern_is_cached() {
+    let workspace = Workspace::with_files(|dir| {
+        let manifest = WORKSPACE_YAML.replace("packages: [lib, app]", "packages: ['packages/*']");
+        fs::write(dir.join("pnpm-workspace.yaml"), manifest).unwrap();
+        fs::create_dir(dir.join("packages")).unwrap();
+        fs::write(dir.join("packages/build.js"), BUILD_SCRIPT).unwrap();
+        write_project(&dir.join("packages/[lib]"), "lib", "", "src.txt");
+        fs::write(dir.join("packages/[lib]/src.txt"), "lib-source").unwrap();
+    });
+    let restored = || restored_tasks(&workspace.run_pipeline_with_output().1);
+    assert_eq!(restored(), Vec::<String>::new());
+    assert_eq!(restored(), ["packages/[lib]#build"]);
+    workspace.write("packages/[lib]/src.txt", "lib-changed");
+    assert_eq!(restored(), Vec::<String>::new());
+    assert_eq!(workspace.read("packages/[lib]/dist/out.txt"), "lib-changed");
+}
+
+#[test]
+fn a_script_run_through_a_dependency_s_bin_shim_is_recorded() {
+    let workspace = Workspace::with_files(|dir| {
+        fs::write(dir.join("pnpm-workspace.yaml"), WORKSPACE_YAML).unwrap();
+        fs::create_dir_all(dir.join("lib")).unwrap();
+        fs::write(
+            dir.join("lib/package.json"),
+            r#"{"name":"lib","version":"1.0.0","bin":{"lib-tool":"tool.js"}}"#,
+        )
+        .unwrap();
+        fs::write(dir.join("lib/tool.js"), format!("#!/usr/bin/env node\n{BUILD_SCRIPT}")).unwrap();
+        fs::create_dir_all(dir.join("app")).unwrap();
+        fs::write(
+            dir.join("app/package.json"),
+            r#"{"name":"app","version":"1.0.0","scripts":{"build":"lib-tool main.txt"},"dependencies":{"lib":"workspace:*"}}"#,
+        )
+        .unwrap();
+        fs::write(dir.join("app/main.txt"), "app-source").unwrap();
+    });
+    assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
+    assert_eq!(workspace.read("app/dist/out.txt"), "app-source");
+    assert_eq!(workspace.run_pipeline(), ["app"]);
+    workspace.write("app/main.txt", "app-changed");
+    assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
+    workspace.write("lib/tool.js", &format!("#!/usr/bin/env node\n{BUILD_SCRIPT}// changed\n"));
+    assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
+}
+
+#[test]
+fn node_writing_its_compile_cache_outside_the_workspace_keeps_tasks_cached() {
+    let workspace = Workspace::new();
+    let compile_cache = tempfile::tempdir().unwrap();
+    let run = || {
+        workspace.run_configured_pipeline(|command| {
+            command.env("NODE_COMPILE_CACHE", compile_cache.path());
+        })
+        .0
+    };
+    assert_eq!(run(), Vec::<&str>::new());
+    assert!(
+        fs::read_dir(compile_cache.path())
+            .unwrap()
+            .next()
+            .is_some(),
+        "node wrote its cache"
+    );
+    assert_eq!(run(), ["lib", "app"]);
+}
+
+#[cfg(windows)]
+#[test]
+fn a_powershell_script_is_recorded() {
+    let workspace = Workspace::with_files(|dir| {
+        fs::write(dir.join("pnpm-workspace.yaml"), WORKSPACE_YAML).unwrap();
+        fs::write(
+            dir.join("build.ps1"),
+            "$text = Get-Content -Raw src.txt\n\
+             New-Item -ItemType Directory -Force dist | Out-Null\n\
+             Set-Content -NoNewline dist/out.txt $text\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join("lib")).unwrap();
+        fs::write(
+            dir.join("lib/package.json"),
+            r#"{"name":"lib","version":"1.0.0","scripts":{"build":"powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ../build.ps1"}}"#,
+        )
+        .unwrap();
+        fs::write(dir.join("lib/src.txt"), "lib-source").unwrap();
+    });
+    assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
+    assert_eq!(workspace.read("lib/dist/out.txt"), "lib-source");
+    assert_eq!(workspace.run_pipeline(), ["lib"]);
+    workspace.write("lib/src.txt", "lib-changed");
+    assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
+    assert_eq!(workspace.read("lib/dist/out.txt"), "lib-changed");
 }
