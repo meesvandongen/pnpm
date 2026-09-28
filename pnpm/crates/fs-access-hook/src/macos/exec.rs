@@ -9,12 +9,8 @@
 //! runs without it where macOS does not strip it. The hook's variables are
 //! kept in the environment of whatever runs.
 
-use super::{
-    SETUP, Setup, absolute,
-    interpose::interpose,
-    launch::{loads_hook, pointers, shebang, strings, with_hook_env, without_hook},
-    log_path,
-};
+use super::{SETUP, absolute, interpose::interpose, log_path};
+use crate::launch::{Setup, loads_hook, pointers, shebang, strings, with_hook_env, without_hook};
 use libc::{c_char, c_int, pid_t, posix_spawn_file_actions_t, posix_spawnattr_t};
 use pnpm_fs_access_protocol::{Access, Event};
 use std::{

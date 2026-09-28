@@ -8,9 +8,9 @@
 mod exec;
 mod files;
 mod interpose;
-mod launch;
 mod shims;
 
+use crate::launch::{COREUTILS_ENV, INSERT_ENV, SHELL_ENV, Setup};
 use pnpm_fs_access_protocol::{Access, Event, LOG_DIR_ENV, PathState};
 use std::{
     ffi::{CStr, OsStr, c_char, c_int},
@@ -22,23 +22,7 @@ use std::{
     },
 };
 
-/// The environment variables pnpm sets for the hook, besides
-/// [`LOG_DIR_ENV`]: the shell and the core utilities to run in place of
-/// the system's.
-pub(crate) const SHELL_ENV: &str = "PNPM_FS_ACCESS_SHELL";
-pub(crate) const COREUTILS_ENV: &str = "PNPM_FS_ACCESS_COREUTILS";
-pub(crate) const INSERT_ENV: &str = "DYLD_INSERT_LIBRARIES";
-
 static LOG_FD: AtomicI32 = AtomicI32::new(-1);
-
-/// The variables this process was started with, handed on to the
-/// processes it starts.
-pub(crate) struct Setup {
-    pub(crate) log_dir: Vec<u8>,
-    pub(crate) hook: Vec<u8>,
-    pub(crate) shell: Vec<u8>,
-    pub(crate) coreutils: Vec<u8>,
-}
 
 pub(crate) static SETUP: OnceLock<Setup> = OnceLock::new();
 

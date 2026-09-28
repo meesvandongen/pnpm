@@ -1,19 +1,38 @@
-//! Building the program, arguments, and environment a hooked `exec` or
-//! `posix_spawn` runs with.
+//! What a hooked `exec` or `posix_spawn` runs on macOS: the program,
+//! arguments, and environment, and whether the hook can load into the
+//! program at all. Other Unix platforms build it only for its tests.
+#![cfg_attr(
+    not(target_os = "macos"),
+    allow(dead_code, reason = "only the tests use it outside macOS")
+)]
 
-use super::{COREUTILS_ENV, INSERT_ENV, SHELL_ENV, Setup};
-use libc::c_char;
 use pnpm_fs_access_protocol::LOG_DIR_ENV;
 use std::{
-    ffi::{CStr, CString, OsStr},
+    ffi::{CStr, CString, OsStr, c_char},
     io::Read,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     ptr,
 };
 
+/// The environment variables pnpm sets for the hook, besides
+/// [`LOG_DIR_ENV`]: the shell and the core utilities to run in place of
+/// the system's.
+pub(crate) const SHELL_ENV: &str = "PNPM_FS_ACCESS_SHELL";
+pub(crate) const COREUTILS_ENV: &str = "PNPM_FS_ACCESS_COREUTILS";
+pub(crate) const INSERT_ENV: &str = "DYLD_INSERT_LIBRARIES";
+
+/// The variables this process was started with, handed on to the
+/// processes it starts.
+pub(crate) struct Setup {
+    pub(crate) log_dir: Vec<u8>,
+    pub(crate) hook: Vec<u8>,
+    pub(crate) shell: Vec<u8>,
+    pub(crate) coreutils: Vec<u8>,
+}
+
 /// The interpreter a `#!` line names, and its one argument.
-pub(super) fn shebang(script: &Path) -> Option<(PathBuf, Option<CString>)> {
+pub(crate) fn shebang(script: &Path) -> Option<(PathBuf, Option<CString>)> {
     let mut head = [0u8; 256];
     let read = std::fs::File::open(script)
         .ok()?
@@ -37,7 +56,7 @@ pub(super) fn shebang(script: &Path) -> Option<(PathBuf, Option<CString>)> {
 }
 
 /// `env` with the variables that load and configure the hook.
-pub(super) fn with_hook_env(setup: &Setup, env: Vec<CString>) -> Vec<CString> {
+pub(crate) fn with_hook_env(setup: &Setup, env: Vec<CString>) -> Vec<CString> {
     let mut insert: Option<Vec<u8>> = None;
     let mut kept: Vec<CString> = Vec::with_capacity(env.len() + 4);
     for entry in env {
@@ -72,7 +91,7 @@ pub(super) fn with_hook_env(setup: &Setup, env: Vec<CString>) -> Vec<CString> {
 
 /// `env` without the hook in `DYLD_INSERT_LIBRARIES`, for a program the
 /// hook cannot load into.
-pub(super) fn without_hook(setup: &Setup, env: Vec<CString>) -> Vec<CString> {
+pub(crate) fn without_hook(setup: &Setup, env: Vec<CString>) -> Vec<CString> {
     env.into_iter()
         .filter_map(|entry| {
             let Some(value) = entry
@@ -100,7 +119,7 @@ pub(super) fn without_hook(setup: &Setup, env: Vec<CString>) -> Vec<CString> {
 /// library in an arm64e process, the ABI Apple builds its own programs for,
 /// and a program with an arm64e slice runs as one. A script runs as its
 /// interpreter.
-pub(super) fn loads_hook(program: &Path) -> bool {
+pub(crate) fn loads_hook(program: &Path) -> bool {
     let interpreter = shebang(program).map(|(interpreter, _)| interpreter);
     cfg!(not(target_arch = "aarch64"))
         || !has_arm64e_slice(interpreter.as_deref().unwrap_or(program))
@@ -148,7 +167,7 @@ fn is_arm64e(cpu_type: Option<u32>, cpu_subtype: Option<u32>) -> bool {
 /// # Safety
 ///
 /// `array` is null or a null-terminated array of NUL-terminated strings.
-pub(super) unsafe fn strings(array: *const *const c_char) -> Vec<CString> {
+pub(crate) unsafe fn strings(array: *const *const c_char) -> Vec<CString> {
     let mut strings = Vec::new();
     if array.is_null() {
         return strings;
@@ -164,7 +183,7 @@ pub(super) unsafe fn strings(array: *const *const c_char) -> Vec<CString> {
     strings
 }
 
-pub(super) fn pointers(strings: &[CString]) -> Vec<*const c_char> {
+pub(crate) fn pointers(strings: &[CString]) -> Vec<*const c_char> {
     strings
         .iter()
         .map(|string| string.as_ptr())
@@ -191,3 +210,6 @@ fn with_hook(setup: &Setup, existing: Option<Vec<u8>>) -> Vec<u8> {
         _ => setup.hook.clone(),
     }
 }
+
+#[cfg(test)]
+mod tests;
