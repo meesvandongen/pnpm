@@ -380,7 +380,8 @@ fn a_powershell_script_is_recorded() {
              Write-Output \"building in $((Get-Location).Path)\"\n\
              $text = Get-Content -Raw src.txt\n\
              New-Item -ItemType Directory -Force dist | Out-Null\n\
-             Set-Content -NoNewline dist/out.txt $text\n",
+             Set-Content -NoNewline dist/out.txt $text\n\
+             Write-Output \"wrote $((Resolve-Path dist/out.txt).Path)\"\n",
         )
         .unwrap();
         fs::create_dir_all(dir.join("lib")).unwrap();
