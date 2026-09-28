@@ -7,7 +7,7 @@ mod node;
 mod paths;
 mod processes;
 
-use pnpm_fs_access_tracer::{FileAccesses, Recorder};
+use pnpm_fs_access_tracer::{FileAccesses, Recorder, Unobserved};
 use std::{
     collections::BTreeSet,
     ffi::OsStr,
@@ -17,14 +17,18 @@ use std::{
 };
 
 /// Run `program` with `args` in `dir` under a recorder.
-fn record(dir: &Path, program: &OsStr, args: &[&OsStr]) -> (ExitStatus, Option<FileAccesses>) {
+fn record(
+    dir: &Path,
+    program: &OsStr,
+    args: &[&OsStr],
+) -> (ExitStatus, Result<FileAccesses, Unobserved>) {
     let recorder = Recorder::new().expect("this system supports recording");
     let mut command = recorder.command(program);
     command.args(args).current_dir(dir);
     run(recorder, command)
 }
 
-fn run(recorder: Recorder, mut command: Command) -> (ExitStatus, Option<FileAccesses>) {
+fn run(recorder: Recorder, mut command: Command) -> (ExitStatus, Result<FileAccesses, Unobserved>) {
     let prepared = recorder.prepare(&mut command).expect("prepare the command");
     let mut child = command.spawn().expect("run the command");
     prepared.started(&child);

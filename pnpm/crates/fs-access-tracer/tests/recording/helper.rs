@@ -4,13 +4,13 @@
 //! ready-made program makes, such as system calls that bypass libc.
 
 use super::run;
-use pnpm_fs_access_tracer::{FileAccesses, Recorder};
+use pnpm_fs_access_tracer::{FileAccesses, Recorder, Unobserved};
 use std::{ffi::OsStr, path::Path};
 
 const SCENARIO_ENV: &str = "PNPM_FS_ACCESS_TEST_SCENARIO";
 
 /// Run the scenario `name` in `dir` under a recorder.
-pub(crate) fn record_scenario(dir: &Path, name: &str) -> Option<FileAccesses> {
+pub(crate) fn record_scenario(dir: &Path, name: &str) -> Result<FileAccesses, Unobserved> {
     let recorder = Recorder::new().expect("this system supports recording");
     let program = std::env::current_exe().unwrap();
     let mut command = recorder.command(program.as_os_str());

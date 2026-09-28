@@ -29,7 +29,10 @@ fn a_path_as_long_as_the_kernel_accepts_is_recorded_whole() {
 fn a_path_longer_than_the_kernel_accepts_leaves_the_record_incomplete() {
     let (_temp, dir) = fixture();
     let name = "a".repeat(5000);
-    assert_eq!(super::helper::record_scenario(&dir, &format!("open {name}")), None);
+    assert_eq!(
+        super::helper::record_scenario(&dir, &format!("open {name}")),
+        Err(pnpm_fs_access_tracer::Unobserved::Call),
+    );
 }
 
 #[cfg(windows)]
