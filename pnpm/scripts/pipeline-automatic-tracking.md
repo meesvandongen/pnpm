@@ -56,7 +56,15 @@ pnpm does not cache a run in two cases, and prints a warning naming the file:
   sees. Add the file to the task's `outputs`, or exclude it with `!` in its
   `inputs`, to cache the task anyway.
 - An input changed while the task ran, for example because you saved a file
-  mid-build. The next run rebuilds with the new contents.
+  mid-build. The next run rebuilds with the new contents. This includes a
+  directory the task listed that another task, running at the same time,
+  created files in: a linter that lists its project while a build writes
+  `dist` there is cached from the next run on. Make such a task depend on the
+  other, with `dependsOn`, to cache it on the first run.
+
+As with any cached task, a tracked task is cached only when it declares
+`outputs`. A task that writes nothing worth keeping, such as a linter, declares
+`outputs: []`.
 
 With `{ auto: true }` in `outputs`, the files the task wrote inside its project
 directory, outside `node_modules` and `.git`, are stored as its outputs and
