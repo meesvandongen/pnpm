@@ -4,12 +4,16 @@
 
 [files]
 extend-exclude = [
+  # Microsoft Detours, vendored unmodified.
+  "pnpm/crates/detours-sys/detours/**",
   "pnpm/crates/crypto-shasums-file/src/node_release_keys/*.asc",
   "pnpm/tasks/micro-benchmark/fixtures/lodash.json",
 ]
 
 [default.extend-words]
 cafs   = "cafs"
+# `msghdr::msg_controllen`
+controllen = "controllen"
 ect    = "ect"
 intoto = "intoto"
 pn     = "pn"

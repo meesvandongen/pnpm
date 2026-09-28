@@ -1,9 +1,12 @@
 use super::{
     CacheDisposition, Config, ExecutionStatus, GraphPkg, HashMap, Instant, IntoDiagnostic,
     LogEvent, LogLevel, Path, PathBuf, PipelineInvocation, PnpmLog, ProjectGraph, RunContext,
-    RunReport, ScriptOutput, Status, SyncInjectedDeps, TaskCache, TaskNode, Value, capture,
-    cargo_cache, env, make_node_package_map_option, make_node_require_option,
+    RunReport, ScriptOutput, Status, SyncInjectedDeps, TaskCache, TaskNode, Value,
+    cache::{FileMatcher, collect_output_files},
+    capture, cargo_cache, env, make_node_package_map_option, make_node_require_option,
+    outcome::{TaskOutcome, finish_task, store_task, task_warning},
     package_map_path_for_execution, pnp_path_for_execution, run_stages, sync_injected_deps,
+    tracking::{run_tracked_task, run_with_tracked_outputs, tracks_inputs, tracks_outputs},
 };
 
 #[derive(Clone, Copy)]
@@ -22,6 +25,8 @@ pub(super) struct RunTaskOptions<'a, 'graph> {
 pub(crate) struct TaskEnvironment<'a> {
     pub(super) init_cwd: &'a Path,
     pub(super) extra_env: &'a HashMap<String, String>,
+    /// See [`pnpm_executor::ScriptExecutionOptions::recorder`].
+    pub(super) recorder: Option<&'a pnpm_fs_access_tracer::Recorder>,
 }
 
 #[derive(Clone, Copy)]
@@ -33,51 +38,56 @@ pub(crate) struct TaskReporting<'a> {
 }
 
 /// Script failures are returned as statuses. Infrastructure errors abort the run.
-pub(super) fn run_pipeline_task(
-    options: &RunTaskOptions<'_, '_>,
-) -> miette::Result<ExecutionStatus> {
-    let root = options.node.project.as_path();
-    let summary_key = options.reporting.summary_key;
+pub(super) fn run_pipeline_task(options: &RunTaskOptions<'_, '_>) -> miette::Result<TaskOutcome> {
     let settings = options.config.tasks.get(&options.node.task_name);
+    if tracks_inputs(settings) {
+        return run_tracked_task(options, settings);
+    }
+    let summary_key = options.reporting.summary_key;
     let cache_key = options.task_key.filter(|_| task_cacheable(options.invocation, settings));
     let start = Instant::now();
     options.reporting.report.task_started(summary_key, options.task_key);
+    let key = options.task_key.map(str::to_string);
 
     if let Some(cache_key) = cache_key
-        && let Some(restored) = try_restore(options, cache_key, start)?
+        && let Some(status) = try_restore(options, cache_key, start)?
     {
-        return Ok(restored);
+        return Ok(TaskOutcome { status, key });
     }
 
-    let execution = execute_task_with_cargo_cache(options, settings)?;
-    let duration = start.elapsed().as_secs_f64() * 1e3;
-    if execution.status == Status::Passed
-        && let Some(cache_key) = cache_key
-        && let Some(captured) = execution.captured
-    {
-        let outputs = settings.and_then(|settings| settings.outputs.as_deref()).unwrap_or_default();
-        if let Err(error) = options.cache.store(cache_key, root, summary_key, outputs, captured) {
-            (options.reporting.emit)(&LogEvent::Pnpm(PnpmLog {
-                level: LogLevel::Warn,
-                message: format!("{summary_key}: failed to store the task in the cache: {error}"),
-                prefix: root.to_string_lossy().into_owned(),
-            }));
+    let execution = match cache_key {
+        Some(cache_key) if tracks_outputs(settings) => {
+            run_with_tracked_outputs(options, settings, cache_key)?
         }
-    }
+        _ => execute_and_store(options, settings, cache_key)?,
+    };
     let disposition =
         if cache_key.is_some() { CacheDisposition::Miss } else { CacheDisposition::Bypass };
-    options.reporting.report.task_finished(summary_key, execution.status, disposition, duration);
-    Ok(ExecutionStatus {
-        status: execution.status,
-        duration: Some(duration),
-        prefix: (execution.status == Status::Failure).then(|| root.to_string_lossy().into_owned()),
-        message: execution.message,
-    })
+    Ok(TaskOutcome { status: finish_task(options, &execution, disposition, start), key })
+}
+
+/// Run the task and store what its `outputs` globs match under
+/// `cache_key`, when it has one and passed.
+fn execute_and_store(
+    options: &RunTaskOptions<'_, '_>,
+    settings: Option<&pnpm_config::TaskSettings>,
+    cache_key: Option<&str>,
+) -> miette::Result<TaskExecution> {
+    let execution = execute_task_with_cargo_cache(options, settings)?;
+    if execution.status == Status::Passed
+        && let Some(cache_key) = cache_key
+        && let Some(captured) = execution.captured.clone()
+    {
+        let outputs = FileMatcher::outputs(settings)?;
+        let files = collect_output_files(&options.node.project, &outputs);
+        store_task(options, cache_key, files, captured);
+    }
+    Ok(execution)
 }
 
 /// The status of a task served from the cache, or `None` when nothing is
 /// stored under `cache_key` or the restore refused.
-fn try_restore(
+pub(super) fn try_restore(
     options: &RunTaskOptions<'_, '_>,
     cache_key: &str,
     start: Instant,
@@ -222,22 +232,20 @@ fn publish_cargo_snapshot(
 }
 
 fn cargo_cache_warning(options: &RunTaskOptions<'_, '_>, reason: &str) {
-    (options.reporting.emit)(&LogEvent::Pnpm(PnpmLog {
-        level: LogLevel::Warn,
-        message: format!("{}: Cargo build cache: {reason}", options.reporting.summary_key),
-        prefix: options.node.project.to_string_lossy().into_owned(),
-    }));
+    task_warning(options, &format!("Cargo build cache: {reason}"));
 }
 
-struct TaskExecution {
-    status: Status,
-    message: Option<String>,
-    captured: Option<Vec<capture::CapturedScript>>,
+pub(super) struct TaskExecution {
+    pub(super) status: Status,
+    pub(super) message: Option<String>,
+    pub(super) captured: Option<Vec<capture::CapturedScript>>,
 }
 
 /// Run the task's scripts for real, capturing their output stream for
 /// the cache alongside the live reporter rendering.
-fn execute_task_scripts(options: &RunTaskOptions<'_, '_>) -> miette::Result<TaskExecution> {
+pub(super) fn execute_task_scripts(
+    options: &RunTaskOptions<'_, '_>,
+) -> miette::Result<TaskExecution> {
     let root = options.node.project.as_path();
     let manifest = &options.graph[root].package.project.manifest;
 
@@ -354,7 +362,7 @@ fn sync_injected_deps_if_configured(
     Ok(())
 }
 
-fn task_cacheable(
+pub(super) fn task_cacheable(
     invocation: &PipelineInvocation,
     settings: Option<&pnpm_config::TaskSettings>,
 ) -> bool {
@@ -411,6 +419,7 @@ fn pipeline_script_context<'a>(
         // The pipeline never bails, so there is no cancellation to
         // propagate into running children.
         process_tracker: None,
+        recorder: options.environment.recorder,
         emit: options.reporting.emit,
     }
 }

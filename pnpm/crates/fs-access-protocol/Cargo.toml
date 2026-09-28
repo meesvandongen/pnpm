@@ -1,0 +1,17 @@
+[package]
+name = "pnpm-fs-access-protocol"
+description = "The access log pnpm's file access hooks write and its recorder reads"
+version = "0.0.1"
+publish = false
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

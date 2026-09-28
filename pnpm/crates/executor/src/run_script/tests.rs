@@ -57,6 +57,16 @@ fn manifest() -> serde_json::Value {
 }
 
 fn run(pkg_root: &Path, stage: &str, script: &str, args: &[String]) -> ScriptExit {
+    run_recorded(pkg_root, stage, script, args, None)
+}
+
+fn run_recorded(
+    pkg_root: &Path,
+    stage: &str,
+    script: &str,
+    args: &[String],
+    recorder: Option<&pnpm_fs_access_tracer::Recorder>,
+) -> ScriptExit {
     let extra_env = HashMap::new();
     run_script(&RunScript {
         environment: crate::ScriptEnvironment {
@@ -74,6 +84,7 @@ fn run(pkg_root: &Path, stage: &str, script: &str, args: &[String]) -> ScriptExi
             shell: None,
             shell_emulator: false,
             wd_bin_dir: None,
+            recorder,
         },
         invocation: crate::ScriptInvocation { stage, script, args },
         manifest: &manifest(),
@@ -120,6 +131,30 @@ fn run_script_prepends_node_modules_bin_to_path() {
             .any(|entry| Path::new(entry) == expected_bin),
         "PATH should contain the project's node_modules/.bin",
     );
+}
+
+#[test]
+fn run_script_records_the_scripts_file_accesses() {
+    let temp = tempdir().expect("temp dir");
+    let dir = dunce::canonicalize(temp.path()).expect("canonical temp dir");
+    fs::write(dir.join("input.txt"), "input").expect("write the input");
+    let recorder = pnpm_fs_access_tracer::Recorder::new().expect("recording is supported");
+    let copy =
+        if cfg!(windows) { "type input.txt > output.txt" } else { "cat input.txt > output.txt" };
+
+    let status = run_recorded(&dir, "build", copy, &[], Some(&recorder));
+    assert!(status.success());
+    let accesses = recorder.finish().expect("every access is recorded");
+    dbg!(&accesses);
+    // The recorded paths are as the script named them, which on Windows
+    // may use short names for the temporary directory.
+    let names = |paths: &std::collections::BTreeSet<std::path::PathBuf>, file: &str| {
+        paths
+            .iter()
+            .any(|path| dunce::canonicalize(path).is_ok_and(|path| path == dir.join(file)))
+    };
+    assert!(names(&accesses.reads, "input.txt"));
+    assert!(names(&accesses.writes, "output.txt"));
 }
 
 #[test]

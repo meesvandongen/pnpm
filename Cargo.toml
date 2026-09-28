@@ -34,6 +34,9 @@ pnpm-engine-runtime-node-resolver = { path = "pnpm/crates/engine-runtime-node-re
 pnpm-env-installer = { path = "pnpm/crates/env-installer" }
 pnpm-env-replace = { path = "pnpm/crates/env-replace" }
 pnpm-fs = { path = "pnpm/crates/fs" }
+pnpm-detours-sys = { path = "pnpm/crates/detours-sys" }
+pnpm-fs-access-protocol = { path = "pnpm/crates/fs-access-protocol" }
+pnpm-fs-access-tracer = { path = "pnpm/crates/fs-access-tracer" }
 pnpm-fs-packlist = { path = "pnpm/crates/fs-packlist" }
 pnpm-git-utils = { path = "pnpm/crates/git-utils" }
 pnpm-registry = { path = "pnpm/crates/registry" }
@@ -144,6 +147,7 @@ bytes = { version = "1.11.0" }
 cap-primitives = { version = "4.0.3" }
 cargo-lock = { version = "11.1.0" }
 cargo-util-schemas = { version = "0.14.2" }
+cc = { version = "1.2" }
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 console = { version = "0.16.3" }
 core-foundation = { version = "0.10.1" }

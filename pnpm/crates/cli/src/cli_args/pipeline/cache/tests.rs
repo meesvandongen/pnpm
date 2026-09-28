@@ -1,8 +1,12 @@
-use super::{InputsUnavailable, RecordedFile, TaskCache, collect_output_files};
+use super::{FileMatcher, InputsUnavailable, RecordedFile, TaskCache, collect_output_files};
 #[cfg(unix)]
 use pnpm_crypto_hash::{create_hex_hash_bytes, create_hex_hash_from_file};
 use pnpm_testing_utils::git_repo::GitRepoFixture;
 use std::fs;
+
+fn out_files(project: &std::path::Path) -> Vec<String> {
+    collect_output_files(project, &FileMatcher::new(&["out/**"], &[]).unwrap()).unwrap()
+}
 
 fn setup() -> (tempfile::TempDir, tempfile::TempDir, TaskCache) {
     let project = tempfile::tempdir().unwrap();
@@ -11,7 +15,7 @@ fn setup() -> (tempfile::TempDir, tempfile::TempDir, TaskCache) {
     fs::create_dir(project.path().join("out")).unwrap();
     fs::write(project.path().join("out/result"), "built").unwrap();
     cache
-        .store("abcdef", project.path(), "build", &["out/**".to_string()], Vec::new())
+        .store("abcdef", project.path(), "build", out_files(project.path()), Vec::new())
         .unwrap();
     (project, storage, cache)
 }
@@ -87,8 +91,11 @@ fn output_globs_select_only_declared_files_and_deduplicate() {
     fs::write(project.path().join("out/result"), "built").unwrap();
     fs::write(project.path().join("src/main"), "source").unwrap();
     assert_eq!(
-        collect_output_files(project.path(), &["out/**".to_string(), "out/result".to_string()])
-            .unwrap(),
+        collect_output_files(
+            project.path(),
+            &FileMatcher::new(&["out/**", "out/result"], &[]).unwrap()
+        )
+        .unwrap(),
         ["out/result"],
     );
 }
@@ -101,7 +108,7 @@ fn repeat_publication_leaves_the_first_snapshot_complete() {
     fs::write(project.path().join("out/new-output"), "new output").unwrap();
     assert!(
         cache
-            .store("abcdef", project.path(), "build", &["out/**".to_string()], Vec::new())
+            .store("abcdef", project.path(), "build", out_files(project.path()), Vec::new())
             .is_err(),
         "conflicting snapshots must not update restoration ownership",
     );
@@ -124,7 +131,7 @@ fn concurrent_task_publications_leave_a_complete_snapshot() {
         let publish = || {
             barrier.wait();
             cache
-                .store("abcdef", project.path(), "build", &["out/**".to_string()], Vec::new())
+                .store("abcdef", project.path(), "build", out_files(project.path()), Vec::new())
                 .unwrap();
         };
         let first = scope.spawn(publish);
@@ -147,7 +154,7 @@ fn output_record_write_failures_are_reported() {
     assert!(cache.restore(&stored, project.path(), "build").is_err());
     assert!(
         cache
-            .store("abcdef", project.path(), "build", &["out/**".to_string()], Vec::new())
+            .store("abcdef", project.path(), "build", out_files(project.path()), Vec::new())
             .is_err(),
     );
 }

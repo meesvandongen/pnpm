@@ -1,10 +1,8 @@
 use super::{
-    Config, ExecutionStatus, GraphPkg, HashMap, HashSet, IndexMap, IntoDiagnostic, Mutex, Path,
-    PathBuf, PipelineInvocation, PipelineResults, ProjectGraph, Status, TaskCache, TaskCompletion,
-    TaskGraph, TaskKey, TaskNode, Value, cache, format_task, render_task_graph_dry_run,
-    task_environment, task_graph_to_json,
+    ExecutionStatus, IndexMap, IntoDiagnostic, Mutex, Path, PipelineInvocation, PipelineResults,
+    Status, TaskCompletion, TaskGraph, TaskKey, TaskNode, Value, format_task,
+    render_task_graph_dry_run, task_graph_to_json,
 };
-use pnpm_reporter::{LogEvent, LogLevel, PnpmLog};
 
 pub(super) struct StatusCounts {
     pub(super) failed: usize,
@@ -61,10 +59,7 @@ pub(super) fn record_task_outcome(
     let status = match outcome {
         Ok(status) => status,
         Err(error) => {
-            let mut abort = abort.lock().expect("abort slot lock is not poisoned");
-            if abort.is_none() {
-                *abort = Some(error);
-            }
+            abort_with(abort, error);
             return TaskCompletion::Aborted;
         }
     };
@@ -73,73 +68,7 @@ pub(super) fn record_task_outcome(
     if failed { TaskCompletion::Failed } else { TaskCompletion::Passed }
 }
 
-/// Pass-through tasks contribute keys to invalidate their dependents.
-pub(super) fn compute_task_keys(
-    task_graph: &TaskGraph,
-    sequenced_tasks: &[TaskKey],
-    graph: &ProjectGraph<GraphPkg<'_>>,
-    cache: &TaskCache,
-    config: &Config,
-    emit: fn(&LogEvent),
-) -> miette::Result<HashMap<TaskKey, Option<String>>> {
-    let mut keys: HashMap<TaskKey, Option<String>> = HashMap::with_capacity(task_graph.len());
-    let mut warned_projects: HashSet<PathBuf> = HashSet::new();
-    for key in sequenced_tasks {
-        let node = &task_graph[key];
-        let manifest = graph[node.project.as_path()].package.project.manifest.value();
-        let script_bodies = task_script_bodies(node, manifest, config.enable_pre_post_scripts);
-        let Some(mut dependency_keys) = node.dependencies
-            .iter()
-            .map(|dependency| keys[dependency].as_deref())
-            .collect::<Option<Vec<&str>>>()
-        else {
-            keys.insert(key.clone(), None);
-            continue;
-        };
-        dependency_keys.sort_unstable();
-        let task_key = cache.compute_task_key(&cache::TaskKeyInputs {
-            node,
-            settings: config.tasks.get(&node.task_name),
-            dependency_keys: &dependency_keys,
-            script_bodies: &script_bodies,
-            environment: &task_environment(
-                config,
-                &node.project,
-                &config.extra_env_with_node_options(),
-            ),
-        })?;
-        if task_key.is_none() {
-            warn_without_git_inputs(cache, &node.project, &mut warned_projects, emit);
-        }
-        keys.insert(key.clone(), task_key);
-    }
-    Ok(keys)
-}
-
-/// Explain a task that runs without a cache key because git cannot
-/// enumerate its project, once per project.
-fn warn_without_git_inputs(
-    cache: &TaskCache,
-    project: &Path,
-    warned_projects: &mut HashSet<PathBuf>,
-    emit: fn(&LogEvent),
-) {
-    let unavailable = cache.inputs_unavailable(project);
-    if !matches!(unavailable, Some(cache::InputsUnavailable::NoGit))
-        || !warned_projects.insert(project.to_path_buf())
-    {
-        return;
-    }
-    emit(&LogEvent::Pnpm(PnpmLog {
-        level: LogLevel::Warn,
-        message: "Cannot enumerate the tracked files of the project with git; running its tasks \
-                  without a cache key."
-            .to_string(),
-        prefix: project.to_string_lossy().into_owned(),
-    }));
-}
-
-fn task_script_bodies(
+pub(super) fn task_script_bodies(
     node: &TaskNode,
     manifest: &Value,
     enable_pre_post_scripts: bool,
@@ -164,7 +93,19 @@ fn task_script_bodies(
     bodies
 }
 
+/// Keep the first error that stops the run.
+fn abort_with(abort: &Mutex<Option<miette::Report>>, error: miette::Report) {
+    let mut abort = abort.lock().expect("abort slot lock is not poisoned");
+    if abort.is_none() {
+        *abort = Some(error);
+    }
+}
+
 impl PipelineResults {
+    pub(super) fn abort(&self, error: miette::Report) {
+        abort_with(&self.abort, error);
+    }
+
     pub(super) fn new(graph: &TaskGraph, workspace_root: &Path) -> Self {
         Self {
             statuses: Mutex::new(

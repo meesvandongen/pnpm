@@ -4665,6 +4665,7 @@ dependencies = [
  "pnpm-env-installer",
  "pnpm-executor",
  "pnpm-fs",
+ "pnpm-fs-access-tracer",
  "pnpm-git-fetcher",
  "pnpm-github-actions",
  "pnpm-global",
@@ -5002,6 +5003,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pnpm-detours-sys"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "pnpm-diagnostics"
 version = "0.0.1"
 dependencies = [
@@ -5166,6 +5175,7 @@ dependencies = [
  "libc",
  "miette 7.6.0",
  "pnpm-fs",
+ "pnpm-fs-access-tracer",
  "pnpm-package-manifest",
  "pnpm-reporter",
  "pretty_assertions",
@@ -5209,6 +5219,37 @@ dependencies = [
  "sha2",
  "tempfile",
  "tracing",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "pnpm-fs-access-hook"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "pnpm-detours-sys",
+ "pnpm-fs-access-protocol",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "pnpm-fs-access-protocol"
+version = "0.0.1"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
+name = "pnpm-fs-access-tracer"
+version = "0.0.1"
+dependencies = [
+ "flate2",
+ "libc",
+ "pnpm-detours-sys",
+ "pnpm-fs-access-protocol",
+ "sha2",
+ "tar",
+ "tempfile",
  "windows-sys 0.61.2",
 ]
 

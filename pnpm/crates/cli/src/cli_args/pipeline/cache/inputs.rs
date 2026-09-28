@@ -1,33 +1,14 @@
 use super::{
-    Arc, Command, Glob, InputsUnavailable, IntoDiagnostic, Path, ProjectFiles, ProjectInputHashes,
+    Arc, Command, InputsUnavailable, IntoDiagnostic, Path, ProjectFiles, ProjectInputHashes,
     TaskCache, TaskKeyInputs, TaskNode, TaskSettings, check_input_directories, create_hex_hash,
     create_hex_hash_bytes, create_hex_hash_from_file, env, fs, io,
+    patterns::{FileMatcher, InputSelection},
 };
-use wax::Program;
 
 #[derive(Debug)]
 pub(super) struct HashedFile {
     pub(super) rel_path: String,
     pub(super) hash: String,
-}
-
-/// The globs a task's `inputs` declaration replaces the default set with,
-/// and the `+`-prefixed ones that add to it.
-fn input_globs(inputs: Option<&[String]>) -> miette::Result<(Vec<Glob<'_>>, Vec<Glob<'static>>)> {
-    let Some(patterns) = inputs else {
-        return Ok((Vec::new(), Vec::new()));
-    };
-    let (add, replace): (Vec<&String>, Vec<&String>) = patterns
-        .iter()
-        .partition(|pattern| pattern.starts_with('+'));
-    Ok((
-        compile_globs_ref(&replace)?,
-        compile_globs_owned(
-            &add.iter()
-                .map(|pattern| pattern[1..].to_string())
-                .collect::<Vec<_>>(),
-        )?,
-    ))
 }
 
 /// A tracked input's contribution to the key, or `None` when the file is
@@ -59,35 +40,6 @@ fn hash_input(path: &Path) -> io::Result<Option<String>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
-}
-
-pub(super) fn compile_globs(patterns: &[String]) -> miette::Result<Vec<Glob<'_>>> {
-    patterns
-        .iter()
-        .map(|pattern| {
-            Glob::new(pattern).map_err(|error| miette::miette!("invalid glob {pattern:?}: {error}"))
-        })
-        .collect()
-}
-
-fn compile_globs_ref<'a>(patterns: &[&'a String]) -> miette::Result<Vec<Glob<'a>>> {
-    patterns
-        .iter()
-        .map(|pattern| {
-            Glob::new(pattern).map_err(|error| miette::miette!("invalid glob {pattern:?}: {error}"))
-        })
-        .collect()
-}
-
-fn compile_globs_owned(patterns: &[String]) -> miette::Result<Vec<Glob<'static>>> {
-    patterns
-        .iter()
-        .map(|pattern| {
-            Glob::new(pattern)
-                .map(Glob::into_owned)
-                .map_err(|error| miette::miette!("invalid glob {pattern:?}: {error}"))
-        })
-        .collect()
 }
 
 fn has_submodule_inputs(project: &Path) -> miette::Result<bool> {
@@ -173,6 +125,7 @@ impl TaskCache {
             "pnpm-pipeline-task:v1".to_string(),
             format!("platform:{}:{}", env::consts::OS, env::consts::ARCH),
             format!("outputs:{:?}", inputs.settings.and_then(|settings| settings.outputs.as_ref())),
+            format!("inputs:{:?}", inputs.settings.and_then(|settings| settings.inputs.as_ref())),
             self.project_rel(&inputs.node.project),
             inputs.node.task_name.clone(),
             format!("lockfile:{}", self.lockfile_hash),
@@ -210,35 +163,23 @@ impl TaskCache {
     /// tracked (and untracked, unignored) files minus its declared
     /// outputs and `node_modules`, narrowed by the task's `inputs` globs
     /// when declared (`+`-prefixed entries add to the default set
-    /// instead).
+    /// instead, `!`-prefixed ones exclude). With automatic tracking the
+    /// default set is empty: the observed accesses stand in for it.
     fn input_files(
         &self,
         node: &TaskNode,
         settings: Option<&TaskSettings>,
     ) -> miette::Result<ProjectInputHashes> {
+        let inputs = settings.and_then(TaskSettings::input_files).unwrap_or_default();
+        let selection = InputSelection::new(&inputs)?;
+        if selection.selects_nothing() {
+            return Ok(Some(Arc::new(Vec::new())));
+        }
         let Some(all) = self.hashed_project_files(&node.project)? else { return Ok(None) };
-        let output_globs = compile_globs(
-            settings.and_then(|settings| settings.outputs.as_deref()).unwrap_or_default(),
-        )?;
-        let (replace_globs, add_globs) =
-            input_globs(settings.and_then(|settings| settings.inputs.as_deref()))?;
+        let outputs = FileMatcher::outputs(settings)?;
         let filtered: Vec<HashedFile> = all
             .iter()
-            .filter(|file| {
-                !output_globs
-                    .iter()
-                    .any(|glob| glob.is_match(file.rel_path.as_str()))
-            })
-            .filter(|file| {
-                let in_default = replace_globs.is_empty()
-                    || replace_globs
-                        .iter()
-                        .any(|glob| glob.is_match(file.rel_path.as_str()));
-                in_default
-                    || add_globs
-                        .iter()
-                        .any(|glob| glob.is_match(file.rel_path.as_str()))
-            })
+            .filter(|file| !outputs.matches(&file.rel_path) && selection.includes(&file.rel_path))
             .map(|file| HashedFile { rel_path: file.rel_path.clone(), hash: file.hash.clone() })
             .collect();
         Ok(Some(Arc::new(filtered)))

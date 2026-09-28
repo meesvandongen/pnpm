@@ -32,6 +32,8 @@ pub(in super::super) struct RunContext<'a> {
     pub(in super::super) silent: bool,
     pub(in super::super) output: ScriptOutput<'a>,
     pub(in super::super) process_tracker: Option<&'a ProcessTracker>,
+    /// See [`ScriptExecutionOptions::recorder`](pnpm_executor::ScriptExecutionOptions::recorder).
+    pub(in super::super) recorder: Option<&'a pnpm_fs_access_tracer::Recorder>,
     /// Where pnpm's own notices about the run go. Distinct from the
     /// streamed script output, which a pipeline may be capturing.
     pub(in super::super) emit: fn(&LogEvent),
@@ -468,6 +470,7 @@ pub(in super::super) fn run_stage(
             shell: ctx.config.script_shell.as_deref().map(Path::new),
             shell_emulator: ctx.config.shell_emulator,
             wd_bin_dir: Some(&modules_bin_dir),
+            recorder: ctx.recorder,
         },
         invocation: pnpm_executor::ScriptInvocation { stage, script, args },
         manifest: ctx.manifest.value(),
