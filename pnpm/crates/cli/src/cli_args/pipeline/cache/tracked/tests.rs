@@ -104,6 +104,17 @@ fn a_matched_pattern_invalidates_only_when_its_matching_entries_change() {
 }
 
 #[test]
+fn a_path_that_is_not_absolute_is_not_an_input() {
+    let fixture = fixture();
+    let mut accesses = FileAccesses::default();
+    accesses.reads.insert(PathBuf::from("tsconfig.json"));
+    accesses.listings.insert(PathBuf::from(if cfg!(windows) { "C:" } else { "." }));
+    accesses.reads.insert(fixture.project.join("src/index.js"));
+    record(&fixture, &accesses);
+    assert_eq!(recorded_paths(&fixture), ["app/src/index.js"]);
+}
+
+#[test]
 fn only_workspace_paths_the_task_did_not_produce_are_inputs() {
     let fixture = fixture();
     let modules = fixture.project.join("node_modules/dep");
