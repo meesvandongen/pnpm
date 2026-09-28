@@ -5,6 +5,8 @@
 //! processes its process starts load it too. Other platforms build an
 //! empty library.
 
+#[cfg(any(windows, test))]
+mod dos_path;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod launch;
 #[cfg(any(windows, target_os = "macos"))]
