@@ -377,6 +377,7 @@ fn a_powershell_script_is_recorded() {
         fs::write(
             dir.join("build.ps1"),
             "$ErrorActionPreference = 'Stop'\n\
+             Write-Output \"building in $((Get-Location).Path)\"\n\
              $text = Get-Content -Raw src.txt\n\
              New-Item -ItemType Directory -Force dist | Out-Null\n\
              Set-Content -NoNewline dist/out.txt $text\n",

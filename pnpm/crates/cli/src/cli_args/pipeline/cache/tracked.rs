@@ -235,7 +235,11 @@ fn changed_input(
                 .iter()
                 .any(|named| has_changed(accesses, named, input.access, &written_into))
         })
-        .map(|(path, _)| path.clone())
+        .map(
+            |(path, _)| {
+                if path.is_empty() { "the workspace root".to_string() } else { path.clone() }
+            },
+        )
 }
 
 /// Whether `named` changed since the run first accessed it, by what its
