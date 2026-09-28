@@ -1,6 +1,6 @@
 use super::{
-    COREUTILS_ENV, INSERT_ENV, SHELL_ENV, Setup, has_arm64e_slice, shebang, with_hook_env,
-    without_hook,
+    COREUTILS_ENV, INSERT_ENV, SHELL_ENV, Setup, has_arm64e_slice, sed_touches_no_files, shebang,
+    with_hook_env, without_hook,
 };
 use pnpm_fs_access_protocol::LOG_DIR_ENV;
 use std::{ffi::CString, fs, path::Path};
@@ -177,4 +177,33 @@ fn an_arm64e_slice_is_found_in_thin_and_universal_binaries() {
         assert_eq!(has_arm64e_slice(&path), expected, "{name}");
     }
     assert!(!has_arm64e_slice(&dir.path().join("missing")));
+}
+
+#[test]
+fn sed_touches_no_files_only_when_it_substitutes_on_standard_input() {
+    let sed = |args: &[&str]| {
+        let args: Vec<&str> = std::iter::once("sed")
+            .chain(args.iter().copied())
+            .collect();
+        sed_touches_no_files(&env(&args))
+    };
+    // What the `node_modules/.bin` shims of pnpm and npm run.
+    assert!(sed(&["-e", r"s,\\,/,g"]));
+    assert!(sed(&[r"s,\\,/,g"]));
+    assert!(sed(&["-n", "-E", "-es/a/b/p", "-e", "s|x|y|2"]));
+    assert!(sed(&[r"s/a\/b/c/"]));
+    for args in [
+        &["-e", "s/a/b/", "file.txt"][..],
+        &["s/a/b/", "file.txt"],
+        &["-i", "", "-e", "s/a/b/", "file.txt"],
+        &["-f", "script.sed"],
+        &["-e", "s/a/b/w out.txt"],
+        &["-e", "r /etc/passwd"],
+        &["-e", "s/a/b/;w out.txt"],
+        &["-e", "s/a/b"],
+        &["-e"],
+        &[],
+    ] {
+        assert!(!sed(args), "{args:?}");
+    }
 }

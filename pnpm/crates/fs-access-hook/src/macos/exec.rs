@@ -10,7 +10,10 @@
 //! kept in the environment of whatever runs.
 
 use super::{SETUP, absolute, interpose::interpose, log_path};
-use crate::launch::{Setup, loads_hook, pointers, shebang, strings, with_hook_env, without_hook};
+use crate::launch::{
+    Setup, loads_hook, pointers, sed_touches_no_files, shebang, strings, with_hook_env,
+    without_hook,
+};
 use libc::{c_char, c_int, pid_t, posix_spawn_file_actions_t, posix_spawnattr_t};
 use pnpm_fs_access_protocol::{Access, Event};
 use std::{
@@ -143,6 +146,9 @@ const COREUTILS: [&str; 107] = [
 struct Launch {
     image: PathBuf,
     program: CString,
+    /// Whether the program's run is part of the record: `false` for a
+    /// protected program that runs without the hook but touches no file.
+    recorded: bool,
     _argv: Vec<CString>,
     argv_ptrs: Vec<*const c_char>,
     _envp: Vec<CString>,
@@ -175,11 +181,15 @@ unsafe fn launch(
     let env = unsafe { strings(if envp.is_null() { environ } else { envp }) };
     let env =
         if loads_hook(&program) { with_hook_env(setup, env) } else { without_hook(setup, env) };
+    let recorded = !(is_protected(&program)
+        && program.file_name() == Some(OsStr::new("sed"))
+        && sed_touches_no_files(&args));
     let argv_ptrs = pointers(&args);
     let envp_ptrs = pointers(&env);
     Some(Launch {
         image,
         program: CString::new(program.as_os_str().as_bytes()).ok()?,
+        recorded,
         _argv: args,
         argv_ptrs,
         _envp: env,
@@ -205,13 +215,20 @@ fn substitute(setup: &Setup, image: &Path) -> (PathBuf, Vec<CString>) {
     (program, prefix)
 }
 
+/// Whether macOS strips `DYLD_INSERT_LIBRARIES` from `program`.
+fn is_protected(program: &Path) -> bool {
+    program
+        .parent()
+        .is_some_and(|dir| {
+            PROTECTED_DIRS
+                .iter()
+                .any(|protected| dir == Path::new(protected))
+        })
+}
+
 /// pnpm's stand-in for a protected program, when it has one.
 fn swapped(setup: &Setup, program: &Path) -> Option<PathBuf> {
-    let dir = program.parent()?;
-    if !PROTECTED_DIRS
-        .iter()
-        .any(|protected| dir == Path::new(protected))
-    {
+    if !is_protected(program) {
         return None;
     }
     let name = program.file_name()?.to_str()?;
@@ -255,13 +272,17 @@ unsafe extern "C" fn hook_execve(
         return unsafe { libc::execve(path, argv, envp) };
     };
     log_path(Access::Read, &launch.image);
-    crate::log::write(Event::Executing { image: launch.image.as_os_str().as_bytes() });
+    if launch.recorded {
+        crate::log::write(Event::Executing { image: launch.image.as_os_str().as_bytes() });
+    }
     // SAFETY: the launch's arrays are null-terminated and live across the
     // call.
     let result = unsafe {
         libc::execve(launch.program.as_ptr(), launch.argv_ptrs.as_ptr(), launch.envp_ptrs.as_ptr())
     };
-    crate::log::write(Event::ExecFailed);
+    if launch.recorded {
+        crate::log::write(Event::ExecFailed);
+    }
     result
 }
 interpose!(hook_execve => libc::execve);
@@ -288,6 +309,7 @@ unsafe fn spawn(
         && flags & libc::POSIX_SPAWN_SETEXEC as libc::c_short != 0;
     log_path(Access::Read, &launch.image);
     let image = launch.image.as_os_str().as_bytes();
+    let replaces = replaces && launch.recorded;
     if replaces {
         crate::log::write(Event::Executing { image });
     }
@@ -305,7 +327,7 @@ unsafe fn spawn(
     };
     if replaces {
         crate::log::write(Event::ExecFailed);
-    } else if result == 0 && !pid.is_null() {
+    } else if result == 0 && !pid.is_null() && launch.recorded {
         // SAFETY: a successful call wrote the child's pid.
         let child = unsafe { *pid } as u32;
         crate::log::write(Event::Spawned { child, image });

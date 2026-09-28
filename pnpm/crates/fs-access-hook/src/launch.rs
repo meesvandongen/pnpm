@@ -164,6 +164,74 @@ fn is_arm64e(cpu_type: Option<u32>, cpu_subtype: Option<u32>) -> bool {
         && cpu_subtype.is_some_and(|subtype| subtype & !CPU_SUBTYPE_MASK == CPU_SUBTYPE_ARM64E)
 }
 
+/// Whether `sed`, run as `args` (`argv[0]` first), touches no file: it
+/// filters standard input with plain `s` substitutions. The shims that
+/// pnpm and npm write in `node_modules/.bin` run it that way to normalize
+/// their own path, and a protected `sed` runs without the hook. A file
+/// operand, an option other than `-n`, `-E`, `-r`, `-u`, and `-e`, or a
+/// command that reads or writes a file (`r`, `w`, a `w` flag) does not
+/// qualify.
+pub(crate) fn sed_touches_no_files(args: &[CString]) -> bool {
+    let mut scripts: Vec<&[u8]> = Vec::new();
+    let mut operands: Vec<&[u8]> = Vec::new();
+    let mut rest = args
+        .iter()
+        .skip(1)
+        .map(CString::as_bytes);
+    while let Some(arg) = rest.next() {
+        match arg {
+            b"-n" | b"-E" | b"-r" | b"-u" => {}
+            b"-e" => match rest.next() {
+                Some(script) => scripts.push(script),
+                None => return false,
+            },
+            _ if arg.starts_with(b"-e") => scripts.push(&arg[2..]),
+            _ if arg.starts_with(b"-") => return false,
+            _ => operands.push(arg),
+        }
+    }
+    if scripts.is_empty() {
+        // Without `-e`, the first operand is the script.
+        if operands.len() != 1 {
+            return false;
+        }
+        scripts = std::mem::take(&mut operands);
+    }
+    operands.is_empty() && scripts.iter().all(|script| is_plain_substitution(script))
+}
+
+/// Whether `script` is one `s` command whose flags neither write a file
+/// nor run a command.
+fn is_plain_substitution(script: &[u8]) -> bool {
+    let [b's', delimiter, rest @ ..] = script else { return false };
+    if matches!(delimiter, b'\\' | b'\n') {
+        return false;
+    }
+    let mut delimiters = 0;
+    let mut escaped = false;
+    let mut flags = None;
+    for (index, byte) in rest.iter().enumerate() {
+        if escaped {
+            escaped = false;
+        } else if *byte == b'\\' {
+            escaped = true;
+        } else if *byte == b'\n' {
+            return false;
+        } else if byte == delimiter {
+            delimiters += 1;
+            if delimiters == 2 {
+                flags = Some(&rest[index + 1..]);
+                break;
+            }
+        }
+    }
+    flags.is_some_and(|flags| {
+        flags
+            .iter()
+            .all(|flag| matches!(flag, b'g' | b'p' | b'I' | b'i' | b'0'..=b'9'))
+    })
+}
+
 /// # Safety
 ///
 /// `array` is null or a null-terminated array of NUL-terminated strings.
