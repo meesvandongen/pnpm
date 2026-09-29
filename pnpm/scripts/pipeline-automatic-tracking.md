@@ -31,9 +31,13 @@ inputs. A read file is fingerprinted by its contents, a listed directory by its
 entry names, and a checked path only by whether it exists and what kind of
 entry it is. On Windows, a program can also ask a directory for the entries
 whose names match a pattern, the way `cmd` looks for `node.*` when a script
-runs `node`. Such a query is fingerprinted by the names that match. On the next run pnpm fingerprints the same paths again. If every
-fingerprint matches, the stored result is restored; otherwise the task runs and
-its new record replaces the old one.
+runs `node`. Such a query is fingerprinted by the names that match.
+
+On the next run pnpm fingerprints the same paths again. If every fingerprint
+matches, the stored result is restored. Otherwise the task runs and its record
+is added. pnpm keeps the paths of a task's last 8 recorded runs, because a
+changed script can read other files. Putting the workspace back in an earlier
+state, such as reverting that script, restores the result stored for it.
 
 Because inputs are observed, a task picks up files that the default input set
 misses, such as a Git-ignored `.env.local` that a build reads, or a file in a

@@ -2,16 +2,16 @@
 //! not known before they run: the tracer records what a run read, probed,
 //! and listed, and the paths inside the workspace become the inputs. A run
 //! is stored under its base key (everything but those files) combined with
-//! the fingerprints the inputs had. The next run fingerprints the same
-//! paths again and looks that combination up, so any change to what the
-//! previous run depended on is a miss.
+//! the fingerprints the inputs had. The next run fingerprints the paths
+//! of the recent runs again and looks those combinations up, so a change
+//! to what a run depended on is a miss for that run's result.
 
 use super::{TaskCache, create_hex_hash, patterns::FileMatcher};
 use derive_more::Display;
 use pnpm_fs_access_tracer::{FileAccesses, PathState};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ffi::OsStr,
     fs, io,
     path::{Component, Path, PathBuf},
@@ -22,7 +22,13 @@ mod name_pattern;
 
 use fingerprint::fingerprint;
 
-const TRACKED_INPUTS_VERSION: u32 = 1;
+const TRACKED_INPUTS_VERSION: u32 = 2;
+
+/// How many of a task's most recent input sets its record keeps. The inputs
+/// a run uses can differ from the previous run's: a changed script can
+/// read or probe other files. A workspace put back in an earlier state is
+/// then found under the input set of the run that last saw that state.
+const RECORDED_INPUT_SETS: usize = 8;
 
 /// How a run used an input, which decides what its fingerprint covers: the
 /// contents of a file read, the entries of a directory listed, the entries
@@ -32,7 +38,7 @@ const TRACKED_INPUTS_VERSION: u32 = 1;
 /// A path used in several ways keeps the greatest. A listing outranks a
 /// read because only a directory is listed, and a read of a directory, an
 /// open of it, covers no more than its kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Access {
     Probe,
@@ -47,12 +53,13 @@ struct TrackedInput {
     fingerprint: String,
 }
 
-/// The record a successful run leaves under its base key, keyed by
+/// The record the successful runs of a task leave under its base key: the
+/// input sets of the most recent ones, newest first, each keyed by
 /// `/`-separated paths relative to the workspace root.
 #[derive(Serialize, Deserialize)]
 struct TrackedInputs {
     version: u32,
-    inputs: BTreeMap<String, TrackedInput>,
+    runs: Vec<BTreeMap<String, Access>>,
 }
 
 /// Why a run's result cannot be stored against the inputs it used.
@@ -88,22 +95,36 @@ pub struct TrackingScope<'a> {
 
 impl TaskCache {
     /// The key the result of the tracked task with `base_key` is stored
-    /// under for the workspace as it is now, or `None` when no run of it
-    /// was recorded.
+    /// under for the workspace as it is now: that of the most recent
+    /// recorded input set with a stored result for the inputs' current
+    /// state, else that of the most recent set. `None` when no run of the
+    /// task was recorded.
     pub fn tracked_key(&self, base_key: &str) -> Option<String> {
-        let text = fs::read_to_string(self.tracked_inputs_path(base_key)).ok()?;
-        let recorded: TrackedInputs = serde_json::from_str(&text).ok()?;
-        if recorded.version != TRACKED_INPUTS_VERSION {
-            return None;
+        let runs = self.recorded_runs(base_key);
+        let mut fingerprints: HashMap<(&str, Access), String> = HashMap::new();
+        let mut keys = runs
+            .iter()
+            .map(|run| {
+                let current: BTreeMap<String, TrackedInput> = run
+                    .iter()
+                    .map(|(path, &access)| {
+                        let fingerprint = fingerprints
+                            .entry((path.as_str(), access))
+                            .or_insert_with(|| fingerprint(&self.canonical_root.join(path), access))
+                            .clone();
+                        (path.clone(), TrackedInput { access, fingerprint })
+                    })
+                    .collect();
+                tracked_key(base_key, &current)
+            });
+        let newest = keys.next()?;
+        if self.lookup(&newest).is_some() {
+            return Some(newest);
         }
-        let current: BTreeMap<String, TrackedInput> = recorded.inputs
-            .into_iter()
-            .map(|(path, input)| {
-                let fingerprint = fingerprint(&self.canonical_root.join(&path), input.access);
-                (path, TrackedInput { access: input.access, fingerprint })
-            })
-            .collect();
-        Some(tracked_key(base_key, &current))
+        Some(
+            keys.find(|key| self.lookup(key).is_some())
+                .unwrap_or(newest),
+        )
     }
 
     /// Record the inputs a successful run of the tracked task with
@@ -138,10 +159,18 @@ impl TaskCache {
             return Err(Unrecordable::ChangedDuringRun(changed));
         }
         let key = tracked_key(base_key, &inputs);
+        let used: BTreeMap<String, Access> = inputs
+            .into_iter()
+            .map(|(path, input)| (path, input.access))
+            .collect();
+        let mut runs = self.recorded_runs(base_key);
+        runs.retain(|run| *run != used);
+        runs.insert(0, used);
+        runs.truncate(RECORDED_INPUT_SETS);
         let path = self.tracked_inputs_path(base_key);
         fs::create_dir_all(path.parent().expect("the record has a parent directory"))
             .map_err(Unrecordable::Io)?;
-        let record = TrackedInputs { version: TRACKED_INPUTS_VERSION, inputs };
+        let record = TrackedInputs { version: TRACKED_INPUTS_VERSION, runs };
         let json = serde_json::to_vec(&record).map_err(|error| Unrecordable::Io(error.into()))?;
         pnpm_fs::write_atomic(&path, &json).map_err(Unrecordable::Io)?;
         Ok(key)
@@ -212,6 +241,16 @@ impl TaskCache {
             }
             None => true,
         }
+    }
+
+    /// The input sets recorded for `base_key`, newest first.
+    fn recorded_runs(&self, base_key: &str) -> Vec<BTreeMap<String, Access>> {
+        fs::read_to_string(self.tracked_inputs_path(base_key))
+            .ok()
+            .and_then(|text| serde_json::from_str::<TrackedInputs>(&text).ok())
+            .filter(|record| record.version == TRACKED_INPUTS_VERSION)
+            .map(|record| record.runs)
+            .unwrap_or_default()
     }
 
     fn tracked_inputs_path(&self, base_key: &str) -> PathBuf {

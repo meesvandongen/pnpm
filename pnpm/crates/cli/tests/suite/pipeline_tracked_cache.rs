@@ -289,6 +289,21 @@ fn a_file_added_to_a_listed_directory_invalidates() {
 }
 
 #[test]
+fn a_build_script_reverted_after_it_used_other_inputs_hits_at_once() {
+    let workspace = Workspace::new();
+    assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
+    assert_eq!(workspace.run_pipeline(), ["lib", "app"]);
+
+    // The changed script probes a path neither project has.
+    workspace.write("build.js", &format!("{BUILD_SCRIPT}fs.existsSync('extra.txt');\n"));
+    assert_eq!(workspace.run_pipeline(), Vec::<&str>::new());
+    assert_eq!(workspace.run_pipeline(), ["lib", "app"]);
+
+    workspace.write("build.js", BUILD_SCRIPT);
+    assert_eq!(workspace.run_pipeline(), ["lib", "app"]);
+}
+
+#[test]
 fn an_input_glob_beside_auto_adds_files_the_task_never_reads() {
     let workspace = Workspace::with_manifest(&WORKSPACE_YAML.replace(
         "'!local.log'",

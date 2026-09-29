@@ -36,7 +36,7 @@ fn record(fixture: &Fixture, accesses: &FileAccesses) -> String {
 fn recorded_paths(fixture: &Fixture) -> Vec<String> {
     let text = fs::read_to_string(fixture.cache.tracked_inputs_path("base")).unwrap();
     let record: serde_json::Value = serde_json::from_str(&text).unwrap();
-    record["inputs"]
+    record["runs"][0]
         .as_object()
         .unwrap()
         .keys()
@@ -61,6 +61,45 @@ fn the_key_holds_until_a_read_file_changes() {
     assert_ne!(fixture.cache.tracked_key("base").as_deref(), Some(key.as_str()));
     fs::write(fixture.project.join("src/index.js"), "source").unwrap();
     assert_eq!(fixture.cache.tracked_key("base").as_deref(), Some(key.as_str()));
+}
+
+/// Store an empty result under `key`, as a run that produced no files.
+fn store(fixture: &Fixture, key: &str) {
+    fixture.cache
+        .store(key, &fixture.project, "app#build", Vec::new(), Vec::new())
+        .unwrap();
+}
+
+#[test]
+fn a_workspace_back_in_an_earlier_state_is_found_under_that_state_s_inputs() {
+    let fixture = fixture();
+    let mut first = FileAccesses::default();
+    first.reads.insert(fixture.project.join("src/index.js"));
+    let first_key = record(&fixture, &first);
+    store(&fixture, &first_key);
+
+    // A changed script that also probes a path records another input set.
+    fs::write(fixture.project.join("src/index.js"), "changed").unwrap();
+    let mut second = first.clone();
+    second.probes.insert(fixture.project.join("main.txt"));
+    let second_key = record(&fixture, &second);
+    store(&fixture, &second_key);
+    assert_eq!(fixture.cache.tracked_key("base").as_deref(), Some(second_key.as_str()));
+
+    fs::write(fixture.project.join("src/index.js"), "source").unwrap();
+    assert_eq!(fixture.cache.tracked_key("base").as_deref(), Some(first_key.as_str()));
+}
+
+#[test]
+fn without_a_stored_result_the_newest_input_set_gives_the_key() {
+    let fixture = fixture();
+    let mut first = FileAccesses::default();
+    first.reads.insert(fixture.project.join("src/index.js"));
+    record(&fixture, &first);
+    let mut second = first.clone();
+    second.probes.insert(fixture.project.join("main.txt"));
+    let second_key = record(&fixture, &second);
+    assert_eq!(fixture.cache.tracked_key("base").as_deref(), Some(second_key.as_str()));
 }
 
 #[test]
