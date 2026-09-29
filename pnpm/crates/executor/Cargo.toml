@@ -12,6 +12,7 @@ repository.workspace = true
 
 [dependencies]
 pnpm-fs = { workspace = true }
+pnpm-fs-access-tracer = { workspace = true }
 pnpm-package-manifest = { workspace = true }
 pnpm-reporter = { workspace = true }
 

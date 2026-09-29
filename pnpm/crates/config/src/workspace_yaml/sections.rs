@@ -1,4 +1,7 @@
-use super::{AuditLevel, BTreeMap, Deserialize, Deserializer, HashMap, IndexMap, overlay_some};
+use super::{
+    AuditLevel, BTreeMap, Deserialize, Deserializer, HashMap, IndexMap, TaskFilePattern,
+    overlay_some,
+};
 
 /// The value of an `allowBuilds` entry.
 ///
@@ -386,15 +389,22 @@ pub struct TaskSettings {
     /// task produces. Declaring `outputs` (even as `[]`, the positive
     /// assertion that the task produces no files) is what makes a task
     /// cacheable by `pnpm pipeline`; a task without the key runs normally.
+    /// A `!`-prefixed entry excludes what it matches, and `{ auto: true }`
+    /// adds the files the task is observed to write inside its project.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub outputs: Option<Vec<String>>,
+    pub outputs: Option<Vec<TaskFilePattern>>,
 
     /// The globs, relative to the project directory, narrowing the task's
     /// cache-key inputs. Absent, the inputs are every tracked (and
     /// untracked, unignored) file of the project; a `+`-prefixed entry adds
-    /// to that default instead of replacing it.
+    /// to that default instead of replacing it, and a `!`-prefixed entry
+    /// excludes what it matches.
+    ///
+    /// `{ auto: true }` replaces the default with the paths the task is
+    /// observed to read, probe, or list inside the workspace while it runs.
+    /// The other glob entries then add the tracked files they match.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub inputs: Option<Vec<String>>,
+    pub inputs: Option<Vec<TaskFilePattern>>,
 
     /// Environment variable names whose values participate in the task's
     /// cache key. Values are hashed into the key, never recorded.
@@ -432,8 +442,8 @@ struct RawTaskSettings {
     concurrency_group: Option<String>,
     priority: Option<serde_json::Value>,
     depends_on: Option<Vec<String>>,
-    outputs: Option<Vec<String>>,
-    inputs: Option<Vec<String>>,
+    outputs: Option<Vec<TaskFilePattern>>,
+    inputs: Option<Vec<TaskFilePattern>>,
     env: Option<Vec<String>>,
     cache: Option<bool>,
     cargo_target_dir: Option<String>,

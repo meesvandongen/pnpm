@@ -1,0 +1,71 @@
+name: Windows Test Binary
+
+# Builds the Rust pnpm CLI for Windows and uploads `pnpm.exe`, for trying
+# automatic input tracking on a Windows machine. The release profile's
+# fat LTO is swapped for thin LTO to keep the build short.
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/nice-hopper-41ff3e]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build pnpm.exe (x86_64-pc-windows-msvc)
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust Toolchain
+        uses: ./.github/actions/rustup
+
+      - name: Install pnpm
+        uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+        with:
+          install: false
+
+      - name: Install Node.js via pnpm
+        run: pnpm runtime set node 22 --global
+
+      - name: Install just
+        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just
+
+      # Cargo reads its dependencies from the crates this installs.
+      - name: Install dependencies
+        shell: bash
+        run: |
+          unset PNPM_HOME
+          unset XDG_DATA_HOME
+          just install
+
+      - name: Build
+        shell: bash
+        run: cargo build --locked --release -p pnpm-cli --bin pnpm
+
+      - name: Check the binary runs
+        shell: bash
+        run: target/release/pnpm.exe --version
+
+      - name: Upload pnpm.exe
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pnpm-windows-x64
+          path: target/release/pnpm.exe
+          if-no-files-found: error
+          retention-days: 14

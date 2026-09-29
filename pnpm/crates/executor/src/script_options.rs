@@ -52,6 +52,11 @@ pub struct ScriptExecutionOptions<'a> {
     /// `modulesDir` puts them somewhere other than
     /// `<dir>/node_modules/.bin`. `None` keeps `<dir>/node_modules/.bin`.
     pub wd_bin_dir: Option<&'a Path>,
+    /// Records the file accesses of the script's process tree. The shell
+    /// emulator runs a script inside pnpm, so
+    /// [`run_script`](fn@crate::run_script) records nothing of a script the
+    /// emulator runs.
+    pub recorder: Option<&'a pnpm_fs_access_tracer::Recorder>,
 }
 
 pub struct ScriptInvocation<'a> {

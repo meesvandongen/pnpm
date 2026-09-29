@@ -384,6 +384,7 @@ fn run_candidate_hooks<Reporter: self::Reporter>(
             shell: context.scripts.shell,
             shell_emulator: context.scripts.shell_emulator,
             wd_bin_dir: None,
+            recorder: None,
         },
         dep_path: &snapshot_key.to_string(),
         pkg_root: pkg_dir,

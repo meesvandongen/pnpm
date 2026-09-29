@@ -1,0 +1,41 @@
+[package]
+name = "pnpm-fs-access-hook"
+description = "The library pnpm loads into a recorded process tree to log its file accesses"
+version = "0.0.1"
+publish = false
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+doctest = false
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+pnpm-fs-access-protocol = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+pnpm-detours-sys = { workspace = true }
+windows-sys = { workspace = true, features = [
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Performance",
+  "Win32_System_ProcessStatus",
+  "Win32_System_SystemServices",
+  "Win32_System_Threading",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+pnpm-fs-access-protocol = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

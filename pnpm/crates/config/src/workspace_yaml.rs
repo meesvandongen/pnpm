@@ -11,6 +11,7 @@ pub use sections::{
 };
 pub(crate) use settings::parse_settings;
 pub use settings::{MacosBackupSettings, WorkspaceSettings};
+pub use task_files::{AutoTracking, TaskFilePattern, TaskFiles};
 
 use crate::{
     AuditConfig, AuditLevel, CatalogMode, Config, HoistingLimits, InitType, LinkWorkspacePackages,
@@ -394,6 +395,8 @@ fn as_set<Setting: serde::de::DeserializeOwned>(config: &Config, key: &str) -> O
 mod tests;
 
 mod sections;
+
+mod task_files;
 
 mod validation;
 
