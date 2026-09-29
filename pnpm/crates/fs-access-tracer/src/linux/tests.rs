@@ -44,6 +44,16 @@ fn records_files_read_by_descendants() {
 }
 
 #[test]
+fn records_files_read_by_a_process_whose_parent_exited() {
+    let (_temp, dir) = fixture();
+    fs::write(dir.join("input.txt"), "hello").unwrap();
+    // The inner shell exits at once, so the subshell reads after its parent
+    // is gone, while the command still runs.
+    let accesses = record_sh(&dir, "sh -c '(sleep 0.5; cat input.txt > /dev/null) &'; sleep 2");
+    assert!(accesses.reads.contains(&dir.join("input.txt")));
+}
+
+#[test]
 fn records_missing_paths_as_probes_and_reads() {
     let (_temp, dir) = fixture();
     let accesses = record_sh(&dir, "test -e missing.txt; cat absent.txt 2>/dev/null; true");

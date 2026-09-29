@@ -71,6 +71,10 @@ impl Recorder {
         }
         let sizes = Sizes::query()
             .map_err(|_| Unsupported("this system does not allow seccomp user notifications"))?;
+        adopt_orphans()
+            .map_err(|_| {
+                Unsupported("this process cannot adopt the processes a command orphans")
+            })?;
         Ok(Recorder {
             shared: Arc::new(Shared {
                 accesses: Mutex::new(FileAccesses::default()),
@@ -223,6 +227,21 @@ impl Shared {
         if !self.finished.load(Ordering::SeqCst) {
             let _ = self.unobserved.set(unobserved);
         }
+    }
+}
+
+/// Make this process the parent of the command's orphans. A call's path is
+/// read from the calling process's memory, which Yama's default
+/// `ptrace_scope` allows only for this process's descendants. Without this,
+/// a process whose parent exits is reparented to init, and none of its
+/// calls can be read. The orphans outlive the command as children of this
+/// process, and are reparented to init when it exits.
+fn adopt_orphans() -> io::Result<()> {
+    // SAFETY: `prctl` takes no pointers.
+    if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 
